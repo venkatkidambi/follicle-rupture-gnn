@@ -88,7 +88,7 @@ param.Tact_tip    = 0;       % [N] usually 0
 %% Damage / rupture parameters
 param.tipDamage_on  = true;
 
-param.sig_fail_tip  = 2e-9; % [N] tip failure threshold (TUNE)
+param.sig_fail_tip  = 2e-8; % [N] tip failure threshold (TUNE)
 param.tau_dmg       = 0.05;   % [s] damage timescale (TUNE)
 param.dmg_pow       = 1;     % sharpness
 
