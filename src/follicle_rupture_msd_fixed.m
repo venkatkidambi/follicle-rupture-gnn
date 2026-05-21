@@ -21,6 +21,10 @@ cOuter_range = [10, 10];
 
 % Time
 tEnd  = 60;                    % s
+numSave = 300;                 % saved output frames; solver still adapts internally
+runPostprocess = true;        % set true to generate diagnostic plots after saving
+odeSolver = 'ode45';           % try 'ode15s' or 'ode23t' if this system behaves stiffly
+progressEveryPhysSec = 2;      % console progress interval in physical seconds
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 outputDir = fullfile(repoRoot, 'results');
@@ -53,8 +57,10 @@ allEdges = sort(allEdges,2);
 edgeList = unique(allEdges,'rows');
 Ne = size(edgeList,1);
 
-figure; scatter3(nodeCoords(:,1),nodeCoords(:,2),nodeCoords(:,3),10,'filled'); 
-axis equal; grid on; title('Ellipsoid surface nodes');
+if runPostprocess
+    figure; scatter3(nodeCoords(:,1),nodeCoords(:,2),nodeCoords(:,3),10,'filled');
+    axis equal; grid on; title('Ellipsoid surface nodes');
+end
 
 param.N = N;
 param.nodeCoords = nodeCoords;
@@ -64,6 +70,10 @@ param.Ne = Ne;
 
 % Fixed geometric rest lengths per edge
 E = edgeList;
+param.edge_i = E(:,1);
+param.edge_j = E(:,2);
+param.edgeAccumI = sparse(param.edge_i, (1:Ne)',  1, N, Ne);
+param.edgeAccumJ = sparse(param.edge_j, (1:Ne)',  1, N, Ne);
 param.L0_edge0 = sqrt(sum((nodeCoords(E(:,2),:) - nodeCoords(E(:,1),:)).^2, 2));
 
 % Baseline per-edge Burgers parameters
@@ -75,8 +85,9 @@ param.c_series_edge = cOuter_range(2) * ones(Ne,1);
 % Passive 1D connection model between cells.
 % Options: 'spring', 'damper', 'maxwell', 'kelvin-voigt', 'zener', 'burgers'.
 % You may also set param.connectionModel_edge to a per-edge cell/string array.
-param.connectionModel = 'spring';
+param.connectionModel = 'maxwell';
 param.connectionModelKey = normalizeConnectionModel(param.connectionModel);
+param.connectionModelId_edge = connectionModelIds(param, Ne);
 
 %% Spatial localization masks (main-body vs posterior cap)
 edgeMid = 0.5*(nodeCoords(E(:,1),:) + nodeCoords(E(:,2),:) );
@@ -158,6 +169,10 @@ param.scale.L       = L_scale;
 param.scale.k2      = k2_scale;
 param.scale.tau     = tau_scale;
 param.scale.epsilon = epsilon;
+param.numSave = numSave;
+param.runPostprocess = runPostprocess;
+param.odeSolver = odeSolver;
+param.progressEveryPhysSec = progressEveryPhysSec;
 
 %% ================= State sizes =================
 nPos = 3*N;
@@ -184,13 +199,22 @@ opts = odeset( ...
     'AbsTol', 1e-4, ...
     'MaxStep', 5, ...
     'InitialStep', 1e-3, ...
-    'OutputFcn', @(t_dim, y, flag) myProgressOutputFcn(t_dim, y, flag, tau_scale, tFinal_dim), ...
+    'OutputFcn', @(t_dim, y, flag) myProgressOutputFcn(t_dim, y, flag, tau_scale, tFinal_dim, param.progressEveryPhysSec), ...
     'Stats', 'on');
 
-numSave = 1800;
 tDimQ_all = linspace(0, tFinal_dim, numSave);
 
-[tDimQ_all, XDimQ_all] = ode45(@(t,X) nondimRHS_shell(t, X, param), tDimQ_all, X0_dim, opts);
+odeRHS = @(t,X) nondimRHS_shell(t, X, param);
+switch lower(param.odeSolver)
+    case 'ode45'
+        [tDimQ_all, XDimQ_all] = ode45(odeRHS, tDimQ_all, X0_dim, opts);
+    case 'ode15s'
+        [tDimQ_all, XDimQ_all] = ode15s(odeRHS, tDimQ_all, X0_dim, opts);
+    case 'ode23t'
+        [tDimQ_all, XDimQ_all] = ode23t(odeRHS, tDimQ_all, X0_dim, opts);
+    otherwise
+        error('Unknown odeSolver "%s". Use "ode45", "ode15s", or "ode23t".', param.odeSolver);
+end
 
 tSol  = tDimQ_all * tau_scale;
 Y_dim = XDimQ_all(:, 1:nPos);
@@ -202,11 +226,13 @@ D_time = XDimQ_all(:, iD1:iD2);
 save(simFile, ...
      'nodeCoords','edgeList','tSol','Y','D_time','param','-v7.3');
 
-try
-    confirm_actomyosin_working(simFile);
-catch ME
-    warning('follicle_rupture:postprocessFailed', ...
-        'Postprocessing failed (%s): %s', ME.identifier, ME.message);
+if param.runPostprocess
+    try
+        confirm_actomyosin_working(simFile);
+    catch ME
+        warning('follicle_rupture:postprocessFailed', ...
+            'Postprocessing failed (%s): %s', ME.identifier, ME.message);
+    end
 end
 
 end % main
@@ -284,7 +310,8 @@ D = min(max(D,0),1);
 qMat = reshape(q,3,[])';
 vMat = reshape(v,3,[])';
 pos  = param.nodeCoords + qMat;
-E    = param.edgeList;
+iEdge = param.edge_i;
+jEdge = param.edge_j;
 
 % Ellipsoid signed error and outward normals at current node positions
 a = param.ell_a; b = param.ell_b; c = param.ell_c;
@@ -299,91 +326,71 @@ nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
 % precompute active tension (additive)
 TactVec = activeTension(t, param);
 
-% Edge strains wrt fixed L0
-eps_e = zeros(Ne,1);
-for e = 1:Ne
-    i = E(e,1); j = E(e,2);
-    rij  = pos(j,:) - pos(i,:);
-    Lcur = norm(rij);
-    L0e = max(param.L0_edge0(e), 1e-18);
-    eps_e(e) = (Lcur - L0e)/L0e;
-end
+% Edge kinematics wrt fixed L0
+rij = pos(jEdge,:) - pos(iEdge,:);
+L = sqrt(sum(rij.^2, 2));
+Lsafe = max(L, 1e-18);
+n_hat = rij ./ Lsafe;
+n_hat(L < 1e-18,:) = 0;
+
+L0 = max(param.L0_edge0(:), 1e-18);
+stretch = L - L0;
+stretch_dot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2);
+eps_e = stretch ./ L0;
 
 % Passive connection element forces
-Fnet  = zeros(N,3);
-dzeta = zeros(Ne,1);
-dsigma= zeros(Ne,1);
-dD    = zeros(Ne,1);
+g  = max(1 - D, param.g_floor_stiff);
+gd = max(1 - D, param.g_floor_damp);
 
-for e = 1:Ne
-    i = E(e,1); j = E(e,2);
+k1 = g  .* param.k1_edge(:);
+k2 = g  .* param.k2_edge(:);
+cS = max(gd .* param.c_series_edge(:), 1e-12);
+cM = max(gd .* param.c_edge(:), 1e-12);
 
-    rij = pos(j,:) - pos(i,:);
-    L   = norm(rij);
+[sig_passive, dsigma, dzeta] = connectionElement1DVectorized( ...
+    param.connectionModelId_edge, stretch, stretch_dot, sigma, zeta, k1, k2, cM, cS);
 
-    L0e = max(param.L0_edge0(e), 1e-18);
-    stretch = L - L0e;
+% total tension = passive + active
+sig_total = sig_passive + TactVec;
 
-    if L < 1e-18
-        n_hat = [0 0 0];
-        stretch_dot = 0;
+Fedge = sig_total .* n_hat;
+Fi = Fedge;
+Fj = -Fedge;
+
+if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
+    nI = nSurf(iEdge,:);
+    nJ = nSurf(jEdge,:);
+    Fi = Fi - sum(Fi .* nI, 2) .* nI;
+    Fj = Fj - sum(Fj .* nJ, 2) .* nJ;
+end
+
+Fnet = zeros(N,3);
+for dim = 1:3
+    Fnet(:,dim) = param.edgeAccumI * Fi(:,dim) + param.edgeAccumJ * Fj(:,dim);
+end
+
+dD = zeros(Ne,1);
+
+% ---- Localized damage from total tension (tension-only) ----
+if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'damageMask')
+    if isfield(param,'eps_gate_on') && param.eps_gate_on
+        gateOpen = (eps_e > param.eps_gate);
     else
-        n_hat = rij / L;
-        stretch_dot = dot(vMat(j,:) - vMat(i,:), n_hat);
+        gateOpen = true(Ne,1);
     end
 
-    % Damage -> load-bearing fraction
-    g  = max(1 - D(e), param.g_floor_stiff);
-    gd = max(1 - D(e), param.g_floor_damp);
+    eligible = (param.damageMask(:) > 0) & gateOpen;
+    if any(eligible)
+        sig_fail = param.sig_fail_tip;
+        sig_tens = max(sig_total, 0);
+        over = max(sig_tens - sig_fail, 0) ./ max(sig_fail, 1e-18);
+        activeDamage = eligible & (over > 0);
 
-    k1 = g  * param.k1_edge(e);
-    k2 = g  * param.k2_edge(e);
-    cS = gd * param.c_series_edge(e);
-    cM = gd * param.c_edge(e);
-
-    % avoid zeros
-    cS = max(cS, 1e-12);
-    cM = max(cM, 1e-12);
-
-    % states
-    z   = zeta(e);
-    sig = sigma(e);
-
-    modelKey = connectionModelForEdge(param, e);
-    [sig_passive, sig_dot, z_dot] = connectionElement1D( ...
-        modelKey, stretch, stretch_dot, sig, z, k1, k2, cM, cS);
-
-    dzeta(e)  = z_dot;
-    dsigma(e) = sig_dot;
-
-    % total tension = passive + active
-    sig_total = sig_passive + TactVec(e);
-
-    Fi = sig_total * n_hat;
-    Fj = -sig_total * n_hat;
-
-    if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
-        Fi = Fi - dot(Fi, nSurf(i,:)) * nSurf(i,:);
-        Fj = Fj - dot(Fj, nSurf(j,:)) * nSurf(j,:);
-    end
-
-    Fnet(i,:) = Fnet(i,:) + Fi;
-    Fnet(j,:) = Fnet(j,:) + Fj;
-
-    % ---- Localized damage from total tension (tension-only) ----
-    if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'damageMask') && param.damageMask(e) > 0
-
-        if ~isfield(param,'eps_gate_on') || ~param.eps_gate_on || (eps_e(e) > param.eps_gate)
-
-            sig_fail = param.sig_fail_tip;
-            sig_tens = max(sig_total, 0);
-
-            over = max(sig_tens - sig_fail, 0) / max(sig_fail, 1e-18);
-            if over > 0
-                pwr = max(param.dmg_pow, 1);
-                tau = max(param.tau_dmg, 1e-6);
-                dD(e) = dD(e) + (over^pwr) * (1 - D(e)) / tau;
-            end
+        if any(activeDamage)
+            pwr = max(param.dmg_pow, 1);
+            tau = max(param.tau_dmg, 1e-6);
+            dD(activeDamage) = dD(activeDamage) + ...
+                (over(activeDamage).^pwr) .* (1 - D(activeDamage)) ./ tau;
         end
     end
 end
@@ -438,60 +445,96 @@ end
 
 
 %% ---------------- Passive connection elements ----------------
-function [sig_passive, sig_dot, z_dot] = connectionElement1D(modelKey, stretch, stretch_dot, sig, z, k1, k2, cM, cS)
-sig_dot = 0;
-z_dot = 0;
+function [sig_passive, sig_dot, z_dot] = connectionElement1DVectorized(modelId, stretch, stretch_dot, sig, z, k1, k2, cM, cS)
+sig_passive = zeros(size(stretch));
+sig_dot = zeros(size(stretch));
+z_dot = zeros(size(stretch));
 
-switch modelKey
-    case 'spring'
-        sig_passive = k1 * stretch;
+isSpring = (modelId == 1);
+if any(isSpring)
+    sig_passive(isSpring) = k1(isSpring) .* stretch(isSpring);
+end
 
-    case 'damper'
-        sig_passive = cM * stretch_dot;
+isDamper = (modelId == 2);
+if any(isDamper)
+    sig_passive(isDamper) = cM(isDamper) .* stretch_dot(isDamper);
+end
 
-    case 'maxwell'
-        sig_passive = sig;
-        sig_dot = k1 * stretch_dot - (k1 / cM) * sig;
+isMaxwell = (modelId == 3);
+if any(isMaxwell)
+    sig_passive(isMaxwell) = sig(isMaxwell);
+    sig_dot(isMaxwell) = k1(isMaxwell) .* stretch_dot(isMaxwell) - ...
+        (k1(isMaxwell) ./ cM(isMaxwell)) .* sig(isMaxwell);
+end
 
-    case 'kelvin-voigt'
-        sig_passive = k1 * stretch + cM * stretch_dot;
+isKelvinVoigt = (modelId == 4);
+if any(isKelvinVoigt)
+    sig_passive(isKelvinVoigt) = k1(isKelvinVoigt) .* stretch(isKelvinVoigt) + ...
+        cM(isKelvinVoigt) .* stretch_dot(isKelvinVoigt);
+end
 
-    case 'zener'
-        sig_passive = k1 * stretch + sig;
-        sig_dot = k2 * stretch_dot - (k2 / cM) * sig;
+isZener = (modelId == 5);
+if any(isZener)
+    sig_passive(isZener) = k1(isZener) .* stretch(isZener) + sig(isZener);
+    sig_dot(isZener) = k2(isZener) .* stretch_dot(isZener) - ...
+        (k2(isZener) ./ cM(isZener)) .* sig(isZener);
+end
 
-    case 'burgers'
-        % Burgers = Kelvin-Voigt branch in series with Maxwell branch.
-        z_dot = (sig - k1 * z) / cS;
-        sig_dot = k2 * (stretch_dot - z_dot) - (k2 / cM) * sig;
-        sig_passive = sig;
-
-    otherwise
-        error('Unknown normalized connection model "%s".', modelKey);
+isBurgers = (modelId == 6);
+if any(isBurgers)
+    % Burgers = Kelvin-Voigt branch in series with Maxwell branch.
+    z_dot(isBurgers) = (sig(isBurgers) - k1(isBurgers) .* z(isBurgers)) ./ cS(isBurgers);
+    sig_dot(isBurgers) = k2(isBurgers) .* ...
+        (stretch_dot(isBurgers) - z_dot(isBurgers)) - ...
+        (k2(isBurgers) ./ cM(isBurgers)) .* sig(isBurgers);
+    sig_passive(isBurgers) = sig(isBurgers);
 end
 end
 
 
-function modelKey = connectionModelForEdge(param, e)
+function modelIds = connectionModelIds(param, Ne)
 if isfield(param, 'connectionModel_edge') && ~isempty(param.connectionModel_edge)
     edgeModels = param.connectionModel_edge;
+    modelIds = zeros(Ne,1);
 
     if iscell(edgeModels)
-        modelKey = normalizeConnectionModel(edgeModels{e});
+        for e = 1:Ne
+            modelIds(e) = connectionModelId(normalizeConnectionModel(edgeModels{e}));
+        end
     elseif isstring(edgeModels)
-        modelKey = normalizeConnectionModel(edgeModels(e));
+        for e = 1:Ne
+            modelIds(e) = connectionModelId(normalizeConnectionModel(edgeModels(e)));
+        end
     elseif iscategorical(edgeModels)
-        modelKey = normalizeConnectionModel(char(edgeModels(e)));
+        for e = 1:Ne
+            modelIds(e) = connectionModelId(normalizeConnectionModel(char(edgeModels(e))));
+        end
     else
         error('param.connectionModel_edge must be a cell, string, or categorical array.');
     end
     return;
 end
 
-if isfield(param, 'connectionModelKey')
-    modelKey = param.connectionModelKey;
-else
-    modelKey = normalizeConnectionModel(param.connectionModel);
+modelIds = connectionModelId(param.connectionModelKey) * ones(Ne,1);
+end
+
+
+function modelId = connectionModelId(modelKey)
+switch modelKey
+    case 'spring'
+        modelId = 1;
+    case 'damper'
+        modelId = 2;
+    case 'maxwell'
+        modelId = 3;
+    case 'kelvin-voigt'
+        modelId = 4;
+    case 'zener'
+        modelId = 5;
+    case 'burgers'
+        modelId = 6;
+    otherwise
+        error('Unknown normalized connection model "%s".', modelKey);
 end
 end
 
@@ -541,9 +584,10 @@ end
 
 
 %% --------- progress output function ----------
-function status = myProgressOutputFcn(t_dim, ~, flag, tau_scale, tFinal_dim)
+function status = myProgressOutputFcn(t_dim, ~, flag, tau_scale, tFinal_dim, progressEveryPhysSec)
 persistent startWall nextPhysTick
 status = 0;
+progressEveryPhysSec = max(progressEveryPhysSec, eps);
 switch flag
     case 'init'
         startWall    = tic;
@@ -565,7 +609,7 @@ switch flag
                 else
                     fprintf('t_phys = %6.1f s  (%3.0f%%)\n', tphys, 100*frac);
                 end
-                nextPhysTick = floor(tphys) + 1;
+                nextPhysTick = floor(tphys / progressEveryPhysSec) * progressEveryPhysSec + progressEveryPhysSec;
             end
         end
     case 'done'

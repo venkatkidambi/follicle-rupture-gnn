@@ -8,7 +8,9 @@ Run:
 run_simulation
 ```
 
-The simulation writes `results/follicleShellSim_test2.mat` and runs diagnostics.
+The simulation writes `results/follicleShellSim_test2.mat`. Set
+`runPostprocess = true` in `src/follicle_rupture_msd_fixed.m` to generate
+diagnostic plots immediately after the run.
 
 Source lives in `src/`.
 
@@ -22,3 +24,15 @@ param.connectionModel = 'burgers';
 Available values are `spring`, `damper`, `maxwell`, `kelvin-voigt`, `zener`,
 and `burgers`. Per-edge models can be supplied with `param.connectionModel_edge`
 as a cell or string array.
+
+Low-power runtime knobs live near the top of `src/follicle_rupture_msd_fixed.m`:
+
+```matlab
+numSave = 300;
+runPostprocess = false;
+odeSolver = 'ode45';
+progressEveryPhysSec = 5;
+```
+
+Try `odeSolver = 'ode15s'` or `'ode23t'` if the damped viscoelastic system
+appears stiff on your machine.
