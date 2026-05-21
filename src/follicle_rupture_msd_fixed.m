@@ -20,11 +20,14 @@ kOuter_range = [1, 1];
 cOuter_range = [10, 10];
 
 % Time
-tEnd  = 60;                    % s
+tEnd  = 240;                    % s
 numSave = 300;                 % saved output frames; solver still adapts internally
-runPostprocess = true;        % set true to generate diagnostic plots after saving
+runPostprocess = false;          % set true to generate diagnostic plots after saving
+makeRuptureMotionVideo = true;  % set true to export an MP4 after saving
 odeSolver = 'ode45';           % try 'ode15s' or 'ode23t' if this system behaves stiffly
-progressEveryPhysSec = 2;      % console progress interval in physical seconds
+progressEveryPhysSec = 5;      % console progress interval in physical seconds
+
+ruptureVideoName = 'follicleRupture_motion.mp4';
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 outputDir = fullfile(repoRoot, 'results');
@@ -32,6 +35,7 @@ if ~exist(outputDir, 'dir')
     mkdir(outputDir);
 end
 simFile = fullfile(outputDir, 'follicleShellSim_test2.mat');
+ruptureVideoFile = fullfile(outputDir, ruptureVideoName);
 
 %% Nodes (ELLIPSOID SURFACE: "football")
 a = 200e-6; b = 80e-6; c = 80e-6;
@@ -225,6 +229,15 @@ D_time = XDimQ_all(:, iD1:iD2);
 
 save(simFile, ...
      'nodeCoords','edgeList','tSol','Y','D_time','param','-v7.3');
+
+if makeRuptureMotionVideo
+    try
+        export_follicle_rupture_motion_video(simFile, ruptureVideoFile);
+    catch ME
+        warning('follicle_rupture:videoExportFailed', ...
+            'Video export failed (%s): %s', ME.identifier, ME.message);
+    end
+end
 
 if param.runPostprocess
     try
