@@ -22,6 +22,13 @@ cOuter_range = [10, 10];
 % Time
 tEnd  = 60;                    % s
 
+repoRoot = fileparts(fileparts(mfilename('fullpath')));
+outputDir = fullfile(repoRoot, 'results');
+if ~exist(outputDir, 'dir')
+    mkdir(outputDir);
+end
+simFile = fullfile(outputDir, 'follicleShellSim_test2.mat');
+
 %% Nodes (ELLIPSOID SURFACE: "football")
 a = 200e-6; b = 80e-6; c = 80e-6;
 nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
@@ -35,6 +42,8 @@ param.postSign = -1;
 % Surface penalty + normal damping
 param.k_surf = 5e-6;     % [N] penalty strength
 param.c_surf = 5e-2;     % [N*s/m] normal damping
+param.c_drag = 1e-3;     % [N*s/m] whole-node damping
+param.projectEdgeForcesToSurface = true;
 
 %% Surface edges (shell-only)
 DT = delaunayTriangulation(nodeCoords);
@@ -63,6 +72,12 @@ param.k2_edge = kOuter_range(2) * ones(Ne,1);
 param.c_edge  = cOuter_range(1) * ones(Ne,1);
 param.c_series_edge = cOuter_range(2) * ones(Ne,1);
 
+% Passive 1D connection model between cells.
+% Options: 'spring', 'damper', 'maxwell', 'kelvin-voigt', 'zener', 'burgers'.
+% You may also set param.connectionModel_edge to a per-edge cell/string array.
+param.connectionModel = 'spring';
+param.connectionModelKey = normalizeConnectionModel(param.connectionModel);
+
 %% Spatial localization masks (main-body vs posterior cap)
 edgeMid = 0.5*(nodeCoords(E(:,1),:) + nodeCoords(E(:,2),:) );
 ax = param.postAxis;
@@ -77,6 +92,19 @@ sCutTip  = prctile(sNodes, 92);    % posterior-most ~8% defines tip
 param.motorMask = double(sMid < sCutMain);    % motors ON in main-body
 param.tipMask   = double(sMid >= sCutTip);    % posterior cap edges
 
+param.damageMode = 'seam';    % 'seam' or 'tip'
+param.seamWidthFrac = 0.04;   % fraction of posterior-score range
+
+switch lower(param.damageMode)
+    case 'seam'
+        seamWidth = param.seamWidthFrac * range(sNodes);
+        param.damageMask = double(abs(sMid - sCutTip) <= seamWidth);
+    case 'tip'
+        param.damageMask = param.tipMask;
+    otherwise
+        error('Unknown damageMode "%s". Use "seam" or "tip".', param.damageMode);
+end
+
 %% Active tension parameters
 param.act_on      = true;
 param.tActOn      = 0.5;     % [s]
@@ -84,6 +112,18 @@ param.tActTau     = 0.1;     % [s]
 
 param.Tact_main   = 2e-6;   % [N] main-body active edge tension (TUNE)
 param.Tact_tip    = 0;       % [N] usually 0
+
+param.axisSelectiveActomyosin = true;
+param.axisAlignmentMin = 0.65;  % 1=perfectly parallel, 0=no orientation filter
+
+if param.axisSelectiveActomyosin
+    edgeVec = nodeCoords(E(:,2),:) - nodeCoords(E(:,1),:);
+    edgeLen = sqrt(sum(edgeVec.^2, 2));
+    axisAlign = abs(edgeVec(:,param.postAxis)) ./ max(edgeLen, 1e-18);
+
+    param.axisAlignment = axisAlign;
+    param.motorMask = param.motorMask .* double(axisAlign >= param.axisAlignmentMin);
+end
 
 %% Damage / rupture parameters
 param.tipDamage_on  = true;
@@ -159,11 +199,11 @@ Y     = Y_dim * L_scale;
 % extract damage over time
 D_time = XDimQ_all(:, iD1:iD2);
 
-save('follicleShellSim_test2.mat', ...
+save(simFile, ...
      'nodeCoords','edgeList','tSol','Y','D_time','param','-v7.3');
 
 try
-    confirm_actomyosin_working('follicleShellSim_test2.mat');
+    confirm_actomyosin_working(simFile);
 catch ME
     warning('follicle_rupture:postprocessFailed', ...
         'Postprocessing failed (%s): %s', ME.identifier, ME.message);
@@ -246,6 +286,16 @@ vMat = reshape(v,3,[])';
 pos  = param.nodeCoords + qMat;
 E    = param.edgeList;
 
+% Ellipsoid signed error and outward normals at current node positions
+a = param.ell_a; b = param.ell_b; c = param.ell_c;
+xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
+fSurf = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
+nxv = 2*xx/(a^2);
+nyv = 2*yy/(b^2);
+nzv = 2*zz/(c^2);
+nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
+nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
+
 % precompute active tension (additive)
 TactVec = activeTension(t, param);
 
@@ -259,7 +309,7 @@ for e = 1:Ne
     eps_e(e) = (Lcur - L0e)/L0e;
 end
 
-% Burgers element forces
+% Passive connection element forces
 Fnet  = zeros(N,3);
 dzeta = zeros(Ne,1);
 dsigma= zeros(Ne,1);
@@ -270,6 +320,9 @@ for e = 1:Ne
 
     rij = pos(j,:) - pos(i,:);
     L   = norm(rij);
+
+    L0e = max(param.L0_edge0(e), 1e-18);
+    stretch = L - L0e;
 
     if L < 1e-18
         n_hat = [0 0 0];
@@ -296,24 +349,29 @@ for e = 1:Ne
     z   = zeta(e);
     sig = sigma(e);
 
-    % Kelvin-Voigt branch: sig = k1*z + cS*z_dot  -> z_dot = (sig - k1*z)/cS
-    z_dot   = (sig - k1*z) / cS;
-
-    % Maxwell: sig_dot = k2*(stretch_dot - z_dot) - (k2/cM)*sig
-    sig_dot = k2*(stretch_dot - z_dot) - (k2/cM)*sig;
+    modelKey = connectionModelForEdge(param, e);
+    [sig_passive, sig_dot, z_dot] = connectionElement1D( ...
+        modelKey, stretch, stretch_dot, sig, z, k1, k2, cM, cS);
 
     dzeta(e)  = z_dot;
     dsigma(e) = sig_dot;
 
     % total tension = passive + active
-    sig_total = sig + TactVec(e);
+    sig_total = sig_passive + TactVec(e);
 
-    % apply only in tension direction as-is (sign handled by n_hat)
-    Fnet(i,:) = Fnet(i,:) + sig_total * n_hat;
-    Fnet(j,:) = Fnet(j,:) - sig_total * n_hat;
+    Fi = sig_total * n_hat;
+    Fj = -sig_total * n_hat;
 
-    % ---- Tip damage from total tension (tension-only) ----
-    if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'tipMask') && param.tipMask(e) > 0
+    if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
+        Fi = Fi - dot(Fi, nSurf(i,:)) * nSurf(i,:);
+        Fj = Fj - dot(Fj, nSurf(j,:)) * nSurf(j,:);
+    end
+
+    Fnet(i,:) = Fnet(i,:) + Fi;
+    Fnet(j,:) = Fnet(j,:) + Fj;
+
+    % ---- Localized damage from total tension (tension-only) ----
+    if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'damageMask') && param.damageMask(e) > 0
 
         if ~isfield(param,'eps_gate_on') || ~param.eps_gate_on || (eps_e(e) > param.eps_gate)
 
@@ -331,29 +389,19 @@ for e = 1:Ne
 end
 
 % ---- Optional tip priming (gentle background weakening) ----
-if isfield(param,'tipPriming_on') && param.tipPriming_on && isfield(param,'tipMask') && any(param.tipMask>0)
+if isfield(param,'tipPriming_on') && param.tipPriming_on && isfield(param,'damageMask') && any(param.damageMask>0)
     A = 1 ./ (1 + exp(-(t - param.tipPriming_on_t)/max(param.tipPriming_tau,eps)));
-    tip = (param.tipMask > 0);
-    dD(tip) = dD(tip) + (A * param.tipPrimingRate) .* (1 - D(tip));
+    damageEdges = (param.damageMask > 0);
+    dD(damageEdges) = dD(damageEdges) + (A * param.tipPrimingRate) .* (1 - D(damageEdges));
 end
 
-%% ===== Surface constraint: ellipsoid manifold via penalty + normal damping =====
-a = param.ell_a; b = param.ell_b; c = param.ell_c;
+%% ===== Surface constraint: ellipsoid manifold via penalty + damping =====
+F_surf  = -param.k_surf * fSurf .* nSurf;
+vN      = sum(vMat .* nSurf, 2);
+F_dampN = -param.c_surf * (vN .* nSurf);
+F_drag  = -param.c_drag * vMat;
 
-xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
-f = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
-
-nxv = 2*xx/(a^2);
-nyv = 2*yy/(b^2);
-nzv = 2*zz/(c^2);
-nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
-nHat = [nxv./nrm, nyv./nrm, nzv./nrm];
-
-F_surf  = -param.k_surf * f .* nHat;
-vN      = sum(vMat .* nHat, 2);
-F_dampN = -param.c_surf * (vN .* nHat);
-
-Fnet = Fnet + F_surf + F_dampN;
+Fnet = Fnet + F_surf + F_dampN + F_drag;
 
 % dq/dt
 dqdt = reshape(vMat.', [], 1);
@@ -387,6 +435,95 @@ if isfield(param,'tipMask')
     T = T + (A * param.Tact_tip) .* param.tipMask(:);
 end
 end
+
+
+%% ---------------- Passive connection elements ----------------
+function [sig_passive, sig_dot, z_dot] = connectionElement1D(modelKey, stretch, stretch_dot, sig, z, k1, k2, cM, cS)
+sig_dot = 0;
+z_dot = 0;
+
+switch modelKey
+    case 'spring'
+        sig_passive = k1 * stretch;
+
+    case 'damper'
+        sig_passive = cM * stretch_dot;
+
+    case 'maxwell'
+        sig_passive = sig;
+        sig_dot = k1 * stretch_dot - (k1 / cM) * sig;
+
+    case 'kelvin-voigt'
+        sig_passive = k1 * stretch + cM * stretch_dot;
+
+    case 'zener'
+        sig_passive = k1 * stretch + sig;
+        sig_dot = k2 * stretch_dot - (k2 / cM) * sig;
+
+    case 'burgers'
+        % Burgers = Kelvin-Voigt branch in series with Maxwell branch.
+        z_dot = (sig - k1 * z) / cS;
+        sig_dot = k2 * (stretch_dot - z_dot) - (k2 / cM) * sig;
+        sig_passive = sig;
+
+    otherwise
+        error('Unknown normalized connection model "%s".', modelKey);
+end
+end
+
+
+function modelKey = connectionModelForEdge(param, e)
+if isfield(param, 'connectionModel_edge') && ~isempty(param.connectionModel_edge)
+    edgeModels = param.connectionModel_edge;
+
+    if iscell(edgeModels)
+        modelKey = normalizeConnectionModel(edgeModels{e});
+    elseif isstring(edgeModels)
+        modelKey = normalizeConnectionModel(edgeModels(e));
+    elseif iscategorical(edgeModels)
+        modelKey = normalizeConnectionModel(char(edgeModels(e)));
+    else
+        error('param.connectionModel_edge must be a cell, string, or categorical array.');
+    end
+    return;
+end
+
+if isfield(param, 'connectionModelKey')
+    modelKey = param.connectionModelKey;
+else
+    modelKey = normalizeConnectionModel(param.connectionModel);
+end
+end
+
+
+function modelKey = normalizeConnectionModel(modelName)
+if ~(ischar(modelName) || (isstring(modelName) && isscalar(modelName)))
+    error('Connection model must be a character vector or scalar string.');
+end
+
+raw = lower(strtrim(char(modelName)));
+raw = regexprep(raw, '^1d\s*', '');
+compact = regexprep(raw, '[\s_\-/\(\)]', '');
+
+switch compact
+    case 'spring'
+        modelKey = 'spring';
+    case {'damper', 'dashpot'}
+        modelKey = 'damper';
+    case 'maxwell'
+        modelKey = 'maxwell';
+    case {'kelvinvoigt', 'kelvinvoight', 'voigt', 'kv'}
+        modelKey = 'kelvin-voigt';
+    case {'zener', 'standardlinearsolid', 'sls'}
+        modelKey = 'zener';
+    case 'burgers'
+        modelKey = 'burgers';
+    otherwise
+        error(['Unknown connection model "%s". Use spring, damper, maxwell, ', ...
+               'kelvin-voigt, zener, or burgers.'], modelName);
+end
+end
+
 
 %% football nodes
 function X = genEllipsoidSurfaceNodes(N, a, b, c, center)

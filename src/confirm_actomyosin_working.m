@@ -7,7 +7,7 @@ function confirm_actomyosin_working(matFile)
 %   sMid   = sg * edgeMid(:,ax)
 %   sCutMain = prctile(sNodes, 80)
 %   sCutTip  = prctile(sNodes, 92)
-%   motorMask = (sMid < sCutMain)
+%   motorMask = (sMid < sCutMain), optionally filtered by edge orientation
 %   tipMask   = (sMid >= sCutTip)
 %
 % Outputs:
@@ -21,7 +21,8 @@ function confirm_actomyosin_working(matFile)
 %   (7) WHERE rupture happened: final-time shell with broken edges highlighted by break-time bin
 
 if nargin < 1 || isempty(matFile)
-    matFile = 'follicleShellSim_test2.mat';
+    repoRoot = fileparts(fileparts(mfilename('fullpath')));
+    matFile = fullfile(repoRoot, 'results', 'follicleShellSim_test2.mat');
 end
 
 close all;
@@ -82,20 +83,29 @@ sMid   = sg * edgeMid0(:,ax);
 sCutMain = prctile(sNodes, mainPct);
 sCutTip  = prctile(sNodes, tipPct);
 
-motorEdge = (sMid <  sCutMain);     % motors ON in main-body (non-posterior)
+if isfield(param,'motorMask')
+    motorEdge = logical(param.motorMask(:));
+else
+    motorEdge = (sMid <  sCutMain);
+end
 tipEdge   = (sMid >= sCutTip);      % tip edges (posterior cap)
+if isfield(param,'damageMask')
+    damageEdge = logical(param.damageMask(:));
+else
+    damageEdge = tipEdge;
+end
 
 % Tip nodes for opening proxy + highlighting: take nodes in posterior-most tipPct%
 tipNodeCut = prctile(sNodes, tipPct);
-idxTipNodes = find(sNodes >= tipNodeCut);
+tipNodeMask = (sNodes >= tipNodeCut);
 
-fprintf('[MASK] motorEdge fraction = %.3f | tipEdge fraction = %.3f\n', ...
-    mean(motorEdge), mean(tipEdge));
+fprintf('[MASK] motorEdge fraction = %.3f | tipEdge fraction = %.3f | damageEdge fraction = %.3f\n', ...
+    mean(motorEdge), mean(tipEdge), mean(damageEdge));
 
 %% ---------------- MAIN vs POSTERIOR NODE GROUPS (for radius curves) ----------------
 % Use same axis-consistent node mask (posterior-most 20% vs rest)
-idxPost = find(sNodes >= sCutMain);     % posterior cap nodes
-idxMain = find(sNodes <  sCutMain);     % main body nodes
+postNodeMask = (sNodes >= sCutMain);    % posterior cap nodes
+mainNodeMask = (sNodes <  sCutMain);    % main body nodes
 
 %% ---------------- MEAN RADIUS CURVES ----------------
 rMean = zeros(Nt,1);
@@ -107,8 +117,8 @@ for k = 1:Nt
     ck = center(k,:);
     r  = vecnorm(Pk - ck, 2, 2);
     rMean(k) = mean(r);
-    rPost(k) = mean(r(idxPost));
-    rMain(k) = mean(r(idxMain));
+    rPost(k) = mean(r(postNodeMask));
+    rMain(k) = mean(r(mainNodeMask));
 end
 
 %% ---------------- EDGE STRAIN OVER TIME ----------------
@@ -128,42 +138,48 @@ else
 end
 eps_time = (L_time - L0_init) ./ max(L0_init, 1e-18);
 
-%% ---------------- RUPTURE METRICS (TIP ONLY) ----------------
+%% ---------------- RUPTURE METRICS ----------------
 eps_tip = eps_time(:, tipEdge);
 maxEpsTip = max(eps_tip, [], 2);
 p95EpsTip = prctile(eps_tip, 95, 2);
 fracTipOverBreak = mean(eps_tip > eps_break, 2);
 
+eps_damage = eps_time(:, damageEdge);
+fracDamageOverBreak = mean(eps_damage > eps_break, 2);
+
 if hasD
     D_tip = D_time(:, tipEdge);
+    D_damage = D_time(:, damageEdge);
     fracTipBroken = mean(D_tip > D_break, 2);
+    fracDamageBroken = mean(D_damage > D_break, 2);
 else
     fracTipBroken = fracTipOverBreak;
+    fracDamageBroken = fracDamageOverBreak;
 end
 
 % Tip opening proxy: RMS spread of tip nodes around their centroid
 openR = zeros(Nt,1);
 for k = 1:Nt
     Pk = squeeze(pos(k,:,:));
-    Tn = Pk(idxTipNodes,:);
+    Tn = Pk(tipNodeMask,:);
     ct = mean(Tn,1);
     openR(k) = sqrt(mean(sum((Tn-ct).^2,2)));
 end
 
 % Summary prints
 if hasD
-    breakMask_tip = (D_time(:,tipEdge) > D_break);
+    breakMask_damage = (D_time(:,damageEdge) > D_break);
 else
-    breakMask_tip = (eps_time(:,tipEdge) > eps_break);
+    breakMask_damage = (eps_time(:,damageEdge) > eps_break);
 end
-kFirst = find(any(breakMask_tip,2), 1, 'first');
+kFirst = find(any(breakMask_damage,2), 1, 'first');
 if ~isempty(kFirst)
-    fprintf('[RUPTURE] First TIP edge breaks at t = %.4f s\n', tSol(kFirst));
+    fprintf('[RUPTURE] First damage-edge break at t = %.4f s\n', tSol(kFirst));
 else
-    fprintf('[RUPTURE] No TIP edges met rupture criterion.\n');
+    fprintf('[RUPTURE] No damage edges met rupture criterion.\n');
 end
-fprintf('[RUPTURE] End-state: fracTipOverBreak=%.3f | fracTipBroken=%.3f\n', ...
-    fracTipOverBreak(end), fracTipBroken(end));
+fprintf('[RUPTURE] End-state: fracDamageOverBreak=%.3f | fracDamageBroken=%.3f | fracTipBroken=%.3f\n', ...
+    fracDamageOverBreak(end), fracDamageBroken(end), fracTipBroken(end));
 
 %% ---------------- BREAK TIME PER EDGE (WHERE) ----------------
 tBreak = nan(1,Ne);
@@ -258,13 +274,13 @@ legend('max tip strain','95th % tip strain','eps\_break','Location','best');
 subplot(3,2,6); hold on; grid on; box on;
 yyaxis left
 plot(tSol, fracTipOverBreak, 'LineWidth', 2);
-plot(tSol, fracTipBroken, 'LineWidth', 2);
-xlabel('Time (s)'); ylabel('Fraction of tip edges');
+plot(tSol, fracDamageBroken, 'LineWidth', 2);
+xlabel('Time (s)'); ylabel('Fraction of edges');
 title('Rupture progression + tip opening proxy');
 if hasD
-    legend('strain > eps\_break','D > D\_break','Location','best');
+    legend('tip strain > eps\_break','damage mask D > D\_break','Location','best');
 else
-    legend('strain > eps\_break','(fallback) same curve','Location','best');
+    legend('tip strain > eps\_break','damage mask strain > eps\_break','Location','best');
 end
 yyaxis right
 plot(tSol, openR*1e6, 'LineWidth', 2);
@@ -294,7 +310,7 @@ title('Rupture location map (final time): broken edges grouped by break time');
 
 % nodes + tip nodes
 scatter3(Pk(:,1)*1e6,Pk(:,2)*1e6,Pk(:,3)*1e6,8,'filled');
-Tn = Pk(idxTipNodes,:);
+Tn = Pk(tipNodeMask,:);
 scatter3(Tn(:,1)*1e6,Tn(:,2)*1e6,Tn(:,3)*1e6,25,'filled');
 
 % intact edges (batched)
@@ -321,9 +337,10 @@ legend('All nodes','Tip nodes','Intact edges','Broken edges (time-binned)','Loca
 % quick print: where did the earliest breaks occur?
 if any(isBroken)
     tEarliest = min(tBreak(isBroken));
-    earlyEdges = find(tBreak == tEarliest);
-    fprintf('[WHERE] earliest break time = %.4f s | num edges = %d\n', tEarliest, numel(earlyEdges));
-    fprintf('[WHERE] earliest breaks: tip fraction = %.3f\n', mean(tipEdge(earlyEdges)));
+    earlyEdgeMask = (tBreak == tEarliest);
+    fprintf('[WHERE] earliest break time = %.4f s | num edges = %d\n', tEarliest, sum(earlyEdgeMask));
+    fprintf('[WHERE] earliest breaks: tip fraction = %.3f | damage-mask fraction = %.3f\n', ...
+        mean(tipEdge(earlyEdgeMask)), mean(damageEdge(earlyEdgeMask)));
 end
 
 %% =========================
