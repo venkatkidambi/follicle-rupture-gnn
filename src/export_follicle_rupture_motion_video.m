@@ -76,10 +76,16 @@ for k = 1:frameSkip:Nt
 
     if ~isempty(D_time)
         brokenEdge = D_time(k,:).' > opts.damageBreak;
-        damageFrac = mean(D_time(k,damageEdge) > opts.damageBreak);
+        damageBroken = D_time(k,damageEdge) > opts.damageBreak;
+        nDamageEdges = nnz(damageEdge);
+        nDamageBroken = nnz(damageBroken);
+        damageFrac = nDamageBroken / max(nDamageEdges, 1);
     else
         brokenEdge = epsEdge > opts.strainBreak;
-        damageFrac = mean(epsEdge(damageEdge) > opts.strainBreak);
+        damageBroken = epsEdge(damageEdge) > opts.strainBreak;
+        nDamageEdges = nnz(damageEdge);
+        nDamageBroken = nnz(damageBroken);
+        damageFrac = nDamageBroken / max(nDamageEdges, 1);
     end
 
     draw_video_edges(ax, Pc_um, E, true(Ne,1), opts.showBaseEdges, [0.82 0.82 0.82], 0.25);
@@ -109,12 +115,10 @@ for k = 1:frameSkip:Nt
     set(ax,'XTick',[],'YTick',[],'ZTick',[]);
     xlabel(ax,''); ylabel(ax,''); zlabel(ax,'');
 
-    add_video_scale_bar_3D(ax, opts.scaleBarUm, 'Label', opts.scaleBarLabel, 'Axis', 'y');
-
     [maxEps, p95Eps] = damage_strain_summary(epsEdge, damageEdge);
     title(ax, sprintf(['Follicle rupture shell | t = %.2f s | ', ...
-        'damage broken = %.2f | max/p95 strain = %.3g / %.3g'], ...
-        tSol(k), damageFrac, maxEps, p95Eps), ...
+        'damage broken = %.2f (%d/%d) | max/p95 strain = %.3g / %.3g'], ...
+        tSol(k), damageFrac, nDamageBroken, nDamageEdges, maxEps, p95Eps), ...
         'FontWeight','bold', 'FontSize', 10);
 
     drawnow;
@@ -219,8 +223,8 @@ end
 
 sNodes = postSign * nodeCoords(:,postAxis);
 sMid = postSign * edgeMid0(:,postAxis);
-sCutMain = prctile(sNodes, 80);
-sCutTip = prctile(sNodes, 92);
+sCutMain = prctile(sNodes, getParamOrDefault(param, 'mainPct', 80));
+sCutTip = prctile(sNodes, getParamOrDefault(param, 'tipPct', 92));
 
 if isfield(param,'motorMask')
     motorEdge = logical(param.motorMask(:));
@@ -240,6 +244,15 @@ end
 
 postNodeMask = sNodes >= sCutMain;
 tipNodeMask = sNodes >= sCutTip;
+end
+
+
+function val = getParamOrDefault(param, fieldName, defaultVal)
+if isfield(param, fieldName) && ~isempty(param.(fieldName))
+    val = param.(fieldName);
+else
+    val = defaultVal;
+end
 end
 
 

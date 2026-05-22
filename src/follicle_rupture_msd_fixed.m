@@ -1,30 +1,31 @@
 function follicle_rupture_msd_fixed
 % Follicle rupture shell model
-% State: X = [q; v; sigma; zeta; D]
+% State: X = [q; v; sigma; zeta; D; A_edge]
 %   q, v        node displacement and velocity
 %   sigma,zeta  viscoelastic edge states
 %   D           edge damage in [0,1], where 1 means failed
+%   A_edge      active rest-length recruitment in [0,1]
 
 clc; close all;
 
 rng(42);
 
 %% USER-PARAMETERS
+% Simulation resolution / scale
 N = 200;
-mVal = 1;
-
+mVal = 1;                 % smaller mass reduces inertial coasting
 R = 125e-6;
 
-% Baseline edge parameters
-kOuter_range = [1, 1]; 
-cOuter_range = [10, 10];
+% Passive edge material parameters
+kOuter_range = [1, 1];
+cOuter_range = [1, 1];
 
-% Time
-tEnd  = 240;                    % s
+% Time integration and saved output
+tEnd  = 1800;                    % s
 numSave = 300;                 % saved output frames; solver still adapts internally
-runPostprocess = false;          % set true to generate diagnostic plots after saving
+runPostprocess = true;         % set true to generate diagnostic plots after saving
 makeRuptureMotionVideo = true;  % set true to export an MP4 after saving
-odeSolver = 'ode45';           % try 'ode15s' or 'ode23t' if this system behaves stiffly
+odeSolver = 'ode45';           % instant damage is stiff; ode15s handles it better
 progressEveryPhysSec = 5;      % console progress interval in physical seconds
 
 ruptureVideoName = 'follicleRupture_motion.mp4';
@@ -50,7 +51,7 @@ param.postSign = -1;
 % Surface penalty + normal damping
 param.k_surf = 5e-6;     % [N] penalty strength
 param.c_surf = 5e-2;     % [N*s/m] normal damping
-param.c_drag = 1e-3;     % [N*s/m] whole-node damping
+param.c_drag = 0.2;     % [N*s/m] whole-node damping; higher = less post-cut coasting
 param.projectEdgeForcesToSurface = true;
 
 %% Surface edges (shell-only)
@@ -79,8 +80,13 @@ param.edge_j = E(:,2);
 param.edgeAccumI = sparse(param.edge_i, (1:Ne)',  1, N, Ne);
 param.edgeAccumJ = sparse(param.edge_j, (1:Ne)',  1, N, Ne);
 param.L0_edge0 = sqrt(sum((nodeCoords(E(:,2),:) - nodeCoords(E(:,1),:)).^2, 2));
+edgeNodeIncidence = sparse([param.edge_i; param.edge_j], [(1:Ne)'; (1:Ne)'], 1, N, Ne);
+param.edgeNeighbor = spones(edgeNodeIncidence' * edgeNodeIncidence);
+param.edgeNeighbor = param.edgeNeighbor - speye(Ne);
+param.edgeNeighbor = spones(param.edgeNeighbor);
+param.edgeNeighborCount = full(sum(param.edgeNeighbor, 2));
 
-% Baseline per-edge Burgers parameters
+% Baseline per-edge passive model parameters
 param.k1_edge = kOuter_range(1) * ones(Ne,1);
 param.k2_edge = kOuter_range(2) * ones(Ne,1);
 param.c_edge  = cOuter_range(1) * ones(Ne,1);
@@ -89,25 +95,30 @@ param.c_series_edge = cOuter_range(2) * ones(Ne,1);
 % Passive 1D connection model between cells.
 % Options: 'spring', 'damper', 'maxwell', 'kelvin-voigt', 'zener', 'burgers'.
 % You may also set param.connectionModel_edge to a per-edge cell/string array.
-param.connectionModel = 'maxwell';
+param.connectionModel = 'burgers';
 param.connectionModelKey = normalizeConnectionModel(param.connectionModel);
 param.connectionModelId_edge = connectionModelIds(param, Ne);
 
-%% Spatial localization masks (main-body vs posterior cap)
+%% Spatial localization masks (main-body vs tiny posterior tip)
 edgeMid = 0.5*(nodeCoords(E(:,1),:) + nodeCoords(E(:,2),:) );
 ax = param.postAxis;
 sg = param.postSign;
+param.edgeMid0 = edgeMid;
 
 sNodes = sg * nodeCoords(:,ax);
 sMid   = sg * edgeMid(:,ax);
 
-sCutMain = prctile(sNodes, 80);    % posterior-most ~20% has motors OFF in main mask
-sCutTip  = prctile(sNodes, 92);    % posterior-most ~8% defines tip
+param.mainPct = 98.5;      % posterior-most ~1.5% has motors OFF
+param.tipPct  = 98.5;    % posterior-most ~1.5% defines tiny autonomous rupture tip
+
+sCutMain = prctile(sNodes, param.mainPct);
+sCutTip  = prctile(sNodes, param.tipPct);
 
 param.motorMask = double(sMid < sCutMain);    % motors ON in main-body
-param.tipMask   = double(sMid >= sCutTip);    % posterior cap edges
+param.tipMask   = double(sMid >= sCutTip);    % tiny posterior cap edges
 
-param.damageMode = 'seam';    % 'seam' or 'tip'
+%% Damage region selection
+param.damageMode = 'tipmost-edge';     % 'seam', 'tip', or 'tipmost-edge'
 param.seamWidthFrac = 0.04;   % fraction of posterior-score range
 
 switch lower(param.damageMode)
@@ -116,19 +127,49 @@ switch lower(param.damageMode)
         param.damageMask = double(abs(sMid - sCutTip) <= seamWidth);
     case 'tip'
         param.damageMask = param.tipMask;
+    case 'tipmost-edge'
+        param.damageMask = zeros(Ne,1);
+        [~, tipmostEdgeIdx] = max(sMid);
+        param.damageMask(tipmostEdgeIdx) = 1;
+        param.tipmostDamageEdge = tipmostEdgeIdx;
     otherwise
-        error('Unknown damageMode "%s". Use "seam" or "tip".', param.damageMode);
+        error('Unknown damageMode "%s". Use "seam", "tip", or "tipmost-edge".', param.damageMode);
 end
 
-%% Active tension parameters
-param.act_on      = true;
+fprintf('[MASK] motor edges = %d/%d | tip edges = %d | damage edges = %d\n', ...
+    nnz(param.motorMask), Ne, nnz(param.tipMask), nnz(param.damageMask));
+if nnz(param.damageMask) == 0
+    error('Tiny tip selection produced zero damage edges. Lower param.tipPct slightly.');
+end
+
+%% Active mechanics parameters
+% Shared active timing
+param.act_on      = false;    % force-based actomyosin off; rest-length shortening drives contraction
 param.tActOn      = 0.5;     % [s]
 param.tActTau     = 0.1;     % [s]
 
-param.Tact_main   = 2e-6;   % [N] main-body active edge tension (TUNE)
-param.Tact_tip    = 0;       % [N] usually 0
+% Optional legacy force-based actomyosin mechanics.
+% These remain available for comparison but are gated by param.act_on.
+param.Tact_main   = 1e-7;   % [N] main-body active edge tension (TUNE)
+param.Tact_tip    = 1e-8;    % [N] light tip-edge cohesion; keeps tip cap from overtaking
+param.activeForceMode = 'posterior-traction'; % 'edge-tension' or 'posterior-traction'
+param.balanceActiveTraction = true;           % remove net translation from polar traction
+param.activeStrokeLimit = 100e-6;              % [m] finite motor stroke before active pull stalls
+param.activeStrokeTau = 2e-6;                 % [m] smoothness of stroke cutoff
 
-param.axisSelectiveActomyosin = true;
+% Optional smooth phase-delayed wave for force-based actomyosin mechanics.
+% Posterior motor edges turn on first; more anterior edges turn on later,
+% giving a continuous traveling pull rather than discrete contractile rings.
+param.activeWave_on = false;
+param.activeWaveMode = 'continuous';  % 'continuous' or 'rings'
+param.activeWaveStartPct = 98.5;        % posterior edge of motor domain
+param.activeWaveDelayMax = 240;       % [s] delay from wave start to anterior end
+param.activeWavePulse_on = true;      % each location turns off after its pulse
+param.activeWavePulseDuration = 10;  % [s] active duration at each location
+param.activeWaveOffTau = 3;           % [s] smooth shutoff timescale
+
+% Optional orientation filter for active edge masks.
+param.axisSelectiveActomyosin = false;
 param.axisAlignmentMin = 0.65;  % 1=perfectly parallel, 0=no orientation filter
 
 if param.axisSelectiveActomyosin
@@ -140,19 +181,76 @@ if param.axisSelectiveActomyosin
     param.motorMask = param.motorMask .* double(axisAlign >= param.axisAlignmentMin);
 end
 
-%% Damage / rupture parameters
-param.tipDamage_on  = true;
+% Optional actomyosin-driven preferred junction shortening.
+% This contracts selected epithelial edges by shortening their active rest length,
+% while the passive connection model still supplies the stress response.
+param.activeRestLength_on = true;
+param.activeShorteningMax = 0.75;       % maximum fractional rest-length reduction
+param.activeShorteningTau = 100;        % [s] contraction timescale
+param.activeShorteningActivation = 'exponential'; % 'exponential', 'sigmoid', or 'accelerating'
+param.activeShorteningAccelPower = 2; % >1 starts slow then speeds up; 2 = quadratic ramp
+param.activeShorteningSigmoidDelay = 0; % [s] added to each edge's activation time for sigmoid midpoint
+param.activeShorteningSigmoidTau = param.activeShorteningTau; % [s] sigmoid switch sharpness
+param.activeShorteningMask = param.motorMask; % per-edge weights; can be any value in [0,1]
 
-param.sig_fail_tip  = 2e-8; % [N] tip failure threshold (TUNE)
-param.tau_dmg       = 0.05;   % [s] damage timescale (TUNE)
-param.dmg_pow       = 1;     % sharpness
+% Optional mechanics-only local recruitment for active rest-length shortening.
+% When enabled, shortening spreads through edge-neighbor coupling instead of
+% the prescribed activeRestLengthShortening(t,param) wave below.
+param.activeRecruitment_on = true;
+param.k_seed = 1/0.1;                         % [1/s] autonomous seed activation
+param.k_neighbor = 1/240;                    % [1/s] neighbor recruitment
+param.recruitmentThreshold = 0.03;             % suppress tiny neighbor activation leaks
+param.seedMask = param.tipMask;           % default posterior/tip seed
+param.recruitmentMask = param.motorMask;     % recruitable active motor domain
+param.recruitmentSignalMode = 'neighborA';   % reserved for future signal modes
+
+% Optional wave for active rest-length shortening. This is independent of
+% force-based activeWave_on, so preferred-length contraction can travel even
+% when external/nodal active actomyosin forces are disabled.
+param.activeRestLengthWave_on = false;
+param.activeRestLengthWaveMode = 'continuous'; % 'continuous' or 'rings'
+param.activeRestLengthWaveStartPct = 98.5;
+param.activeRestLengthWaveDelayMax = 900;      % [s] delay from wave start to anterior end
+param.activeRestLengthWavePulse_on = false;   % false = edges stay shortened after their wave reaches them
+param.activeRestLengthWavePulseDuration = 1;  % [s] shortening duration at each location
+param.activeRestLengthWaveOffTau = 1;          % [s] smooth recovery timescale
+
+% Optional weak anterior anchoring. This is a soft positional boundary
+% condition to stabilize directional epithelial retraction, not a rigid pin.
+param.anchor_on = true;
+param.anchorPct = 10;          % anterior-most percentile of nodes
+param.k_anchor = 10;        % weak positional tether stiffness
+param.c_anchor = 1;        % anchor damping
+
+sCutAnchor = prctile(sNodes, param.anchorPct);
+param.anchorNodeMask = double(sNodes <= sCutAnchor);
+fprintf('[ANCHOR] anchor nodes = %d/%d\n', nnz(param.anchorNodeMask), N);
+
+param = configureActiveForceWave(param, sNodes, sMid, Ne);
+param = configureActiveRestLengthWave(param, sNodes, sMid, Ne);
+
+fprintf('[ACTIVE REST LENGTH] enabled = %d | max shortening = %.3g | tau = %.3g s\n', ...
+    isfield(param,'activeRestLength_on') && param.activeRestLength_on, ...
+    param.activeShorteningMax, param.activeShorteningTau);
+
+%% Damage / rupture parameters
+param.tipDamage_on  = true;  % off because the tiny tip now ruptures autonomously
+
+param.sig_fail_tip  = 1e-9; % [N] tip failure threshold (TUNE)
+param.tau_dmg       = 0.005;   % [s] damage timescale (TUNE)
+param.dmg_pow       = 2;     % sharpness
+
+% Force the tiny tip to fail on a clock, independent of contractile pulling.
+param.instantDamage_on   = false;
+param.instantDamageTime  = 0;
+param.instantDamageTau   = 1e-4;  % [s] smaller = closer to immediate cut
 
 param.eps_gate_on   = true;  % only damage if opening
-param.eps_gate      = 0.01;
+param.eps_gate      = 0.001;
 
 % Optional: gentle tip priming (adds small damage even before overload)
-param.tipPriming_on   = true;
-param.tipPrimingRate  = 0.02;  % [1/s]
+param.tipPriming_on   = false; % off because instantDamage_on handles autonomous rupture
+param.tipPrimingRate  = 0.05;  % [1/s]
 param.tipPriming_on_t = 0.5;   % [s]
 param.tipPriming_tau  = 0.3;   % [s]
 
@@ -185,12 +283,14 @@ nVel = 3*N;
 param.nPos = nPos;
 param.nVel = nVel;
 
-% X = [q; v; sigma; zeta; D]
-nX = nPos + nVel + Ne + Ne + Ne;
+% X = [q; v; sigma; zeta; D; A_edge]
+nX = nPos + nVel + Ne + Ne + Ne + Ne;
 
-% Damage block indices for extracting D_time after integration
+% Edge state block indices for extracting saved time courses
 iD1 = nPos + nVel + 2*Ne + 1;
 iD2 = iD1 + Ne - 1;
+iA1 = iD2 + 1;
+iA2 = iA1 + Ne - 1;
 
 %% Integrate
 tFinal_dim = tEnd / tau_scale;
@@ -224,11 +324,12 @@ tSol  = tDimQ_all * tau_scale;
 Y_dim = XDimQ_all(:, 1:nPos);
 Y     = Y_dim * L_scale;
 
-% extract damage over time
+% extract edge state time courses
 D_time = XDimQ_all(:, iD1:iD2);
+A_time = min(max(XDimQ_all(:, iA1:iA2), 0), 1);
 
 save(simFile, ...
-     'nodeCoords','edgeList','tSol','Y','D_time','param','-v7.3');
+     'nodeCoords','edgeList','tSol','Y','D_time','A_time','param','-v7.3');
 
 if makeRuptureMotionVideo
     try
@@ -251,6 +352,178 @@ end
 end % main
 
 
+%% ===================== Active wave setup helpers =====================
+function param = configureActiveForceWave(param, sNodes, sMid, Ne)
+if isfield(param,'activeWave_on') && param.activeWave_on
+    sWaveStart = prctile(sNodes, param.activeWaveStartPct);
+    motorEdgeForDelay = param.motorMask(:) > 0;
+    if any(motorEdgeForDelay)
+        sAnterior = min(sMid(motorEdgeForDelay));
+    else
+        sAnterior = min(sMid);
+    end
+
+    phaseContinuous = max(0, sWaveStart - sMid) ./ max(sWaveStart - sAnterior, eps);
+    phaseContinuous = min(phaseContinuous, 1);
+
+    if isfield(param,'activeWaveMode') && strcmpi(param.activeWaveMode, 'rings')
+        if ~isfield(param,'activeWaveNumRings') || isempty(param.activeWaveNumRings)
+            param.activeWaveNumRings = 2;
+        end
+        nRings = max(1, round(param.activeWaveNumRings));
+        if nRings == 1
+            ringId = ones(Ne,1);
+        else
+            ringId = floor(phaseContinuous * nRings) + 1;
+            ringId = min(max(ringId, 1), nRings);
+        end
+
+        if isfield(param,'activeRingStartTimes') && numel(param.activeRingStartTimes) == nRings
+            ringStartTimes = param.activeRingStartTimes(:);
+        elseif nRings == 1
+            ringStartTimes = param.tActOn;
+        else
+            ringStartTimes = linspace(param.tActOn, param.tActOn + param.activeWaveDelayMax, nRings).';
+        end
+
+        if isfield(param,'activeRingDuration') && numel(param.activeRingDuration) == nRings
+            ringDurations = param.activeRingDuration(:);
+        else
+            ringDurations = param.activeWavePulseDuration * ones(nRings,1);
+        end
+
+        param.activeWaveNumRings = nRings;
+        param.activeRingId_edge = ringId;
+        param.activeRingStartTimes = ringStartTimes;
+        param.activeRingStopTimes = ringStartTimes + ringDurations;
+        param.tActOn_edge = ringStartTimes(ringId);
+        param.tActOff_edge = param.activeRingStopTimes(ringId);
+
+        motorCountsByRing = zeros(nRings,1);
+        if any(motorEdgeForDelay)
+            motorCountsByRing = accumarray(ringId(motorEdgeForDelay), 1, [nRings 1], @sum, 0);
+        end
+        fprintf('[ACTIVE WAVE] mode = rings | rings = %d | motor edges per ring: %s | starts: %s\n', ...
+            nRings, sprintf('%d ', motorCountsByRing), sprintf('%.1f ', ringStartTimes));
+    else
+        param.activeWaveMode = 'continuous';
+        param.activeRingId_edge = [];
+        param.tActOn_edge = param.tActOn + param.activeWaveDelayMax * phaseContinuous;
+        param.tActOff_edge = param.tActOn_edge + param.activeWavePulseDuration;
+
+        if any(motorEdgeForDelay)
+            fprintf('[ACTIVE WAVE] mode = continuous | delay range = %.1f-%.1f s | pulse duration = %.1f s\n', ...
+                min(param.tActOn_edge(motorEdgeForDelay)), ...
+                max(param.tActOn_edge(motorEdgeForDelay)), ...
+                param.activeWavePulseDuration);
+        else
+            fprintf('[ACTIVE WAVE] mode = continuous | no motor edges selected\n');
+        end
+    end
+
+    param.activeWavePhase_edge = phaseContinuous;
+    param.activeWaveDelay_edge = param.tActOn_edge - param.tActOn;
+else
+    param.activeWaveDelay_edge = zeros(Ne,1);
+    param.activeWavePhase_edge = zeros(Ne,1);
+    param.activeRingId_edge = ones(Ne,1);
+    param.tActOn_edge = param.tActOn * ones(Ne,1);
+    param.tActOff_edge = inf(Ne,1);
+end
+end
+
+
+function param = configureActiveRestLengthWave(param, sNodes, sMid, Ne)
+if isfield(param,'activeRestLengthWave_on') && param.activeRestLengthWave_on
+    sRestWaveStart = prctile(sNodes, param.activeRestLengthWaveStartPct);
+    restMaskForDelay = param.activeShorteningMask(:);
+    if numel(restMaskForDelay) == 1
+        restEdgeForDelay = repmat(restMaskForDelay > 0, Ne, 1);
+    elseif numel(restMaskForDelay) == Ne
+        restEdgeForDelay = restMaskForDelay > 0;
+    else
+        error('param.activeShorteningMask must be scalar or have one value per edge.');
+    end
+
+    if any(restEdgeForDelay)
+        sAnteriorRest = min(sMid(restEdgeForDelay));
+    else
+        sAnteriorRest = min(sMid);
+    end
+
+    restPhaseContinuous = max(0, sRestWaveStart - sMid) ./ max(sRestWaveStart - sAnteriorRest, eps);
+    restPhaseContinuous = min(restPhaseContinuous, 1);
+
+    if isfield(param,'activeRestLengthWaveMode') && strcmpi(param.activeRestLengthWaveMode, 'rings')
+        if ~isfield(param,'activeRestLengthWaveNumRings') || isempty(param.activeRestLengthWaveNumRings)
+            param.activeRestLengthWaveNumRings = 2;
+        end
+        nRestRings = max(1, round(param.activeRestLengthWaveNumRings));
+        if nRestRings == 1
+            restRingId = ones(Ne,1);
+        else
+            restRingId = floor(restPhaseContinuous * nRestRings) + 1;
+            restRingId = min(max(restRingId, 1), nRestRings);
+        end
+
+        if isfield(param,'activeRestLengthRingStartTimes') && numel(param.activeRestLengthRingStartTimes) == nRestRings
+            restRingStartTimes = param.activeRestLengthRingStartTimes(:);
+        elseif nRestRings == 1
+            restRingStartTimes = param.tActOn;
+        else
+            restRingStartTimes = linspace(param.tActOn, param.tActOn + param.activeRestLengthWaveDelayMax, nRestRings).';
+        end
+
+        if isfield(param,'activeRestLengthRingDuration') && numel(param.activeRestLengthRingDuration) == nRestRings
+            restRingDurations = param.activeRestLengthRingDuration(:);
+        else
+            restRingDurations = param.activeRestLengthWavePulseDuration * ones(nRestRings,1);
+        end
+
+        param.activeRestLengthWaveNumRings = nRestRings;
+        param.activeRestLengthRingId_edge = restRingId;
+        param.activeRestLengthRingStartTimes = restRingStartTimes;
+        param.activeRestLengthRingStopTimes = restRingStartTimes + restRingDurations;
+        param.tActiveRestLengthOn_edge = restRingStartTimes(restRingId);
+        param.tActiveRestLengthOff_edge = param.activeRestLengthRingStopTimes(restRingId);
+
+        restCountsByRing = zeros(nRestRings,1);
+        if any(restEdgeForDelay)
+            restCountsByRing = accumarray(restRingId(restEdgeForDelay), 1, [nRestRings 1], @sum, 0);
+        end
+        fprintf('[ACTIVE REST LENGTH WAVE] mode = rings | rings = %d | shortening edges per ring: %s | starts: %s\n', ...
+            nRestRings, sprintf('%d ', restCountsByRing), sprintf('%.1f ', restRingStartTimes));
+    else
+        param.activeRestLengthWaveMode = 'continuous';
+        param.activeRestLengthRingId_edge = [];
+        param.tActiveRestLengthOn_edge = param.tActOn + param.activeRestLengthWaveDelayMax * restPhaseContinuous;
+        param.tActiveRestLengthOff_edge = param.tActiveRestLengthOn_edge + param.activeRestLengthWavePulseDuration;
+
+        if any(restEdgeForDelay)
+            fprintf('[ACTIVE REST LENGTH WAVE] mode = continuous | delay range = %.1f-%.1f s | pulse duration = %.1f s\n', ...
+                min(param.tActiveRestLengthOn_edge(restEdgeForDelay)), ...
+                max(param.tActiveRestLengthOn_edge(restEdgeForDelay)), ...
+                param.activeRestLengthWavePulseDuration);
+        else
+            fprintf('[ACTIVE REST LENGTH WAVE] mode = continuous | no shortening edges selected\n');
+        end
+    end
+
+    if ~isfield(param,'activeRestLengthWavePulse_on') || ~param.activeRestLengthWavePulse_on
+        param.tActiveRestLengthOff_edge = inf(Ne,1);
+    end
+    param.activeRestLengthWavePhase_edge = restPhaseContinuous;
+    param.activeRestLengthWaveDelay_edge = param.tActiveRestLengthOn_edge - param.tActOn;
+else
+    param.activeRestLengthWaveDelay_edge = zeros(Ne,1);
+    param.activeRestLengthWavePhase_edge = zeros(Ne,1);
+    param.activeRestLengthRingId_edge = ones(Ne,1);
+    param.tActiveRestLengthOn_edge = param.tActOn * ones(Ne,1);
+    param.tActiveRestLengthOff_edge = inf(Ne,1);
+end
+end
+
+
 %% ===================== Nondimensional wrapper RHS =====================
 function dXdim = nondimRHS_shell(t_dim, X_dim, param)
 nPos = param.nPos;
@@ -264,12 +537,14 @@ iV2  = iQ2 + nVel;
 iS2  = iV2 + Ne;
 iZ2  = iS2 + Ne;
 iD2  = iZ2 + Ne;
+iA2  = iD2 + Ne;
 
 q_dim   = X_dim(1:iQ2);
 v_dim   = X_dim(iQ2+1:iV2);
 sig_dim = X_dim(iV2+1:iS2);
 zet_dim = X_dim(iS2+1:iZ2);
 D_dim   = X_dim(iZ2+1:iD2);
+A_dim   = X_dim(iD2+1:iA2);
 
 % to physical
 q_phys   = q_dim * scale.L;
@@ -277,9 +552,10 @@ v_phys   = v_dim * (scale.L/scale.tau);
 sig_phys = sig_dim * (scale.k2*scale.L);
 zet_phys = zet_dim * scale.L;
 D_phys   = D_dim;
+A_phys   = A_dim;
 t_phys   = t_dim * scale.tau;
 
-dX_phys = ShellRHS_physical(t_phys, [q_phys; v_phys; sig_phys; zet_phys; D_phys], param);
+dX_phys = ShellRHS_physical(t_phys, [q_phys; v_phys; sig_phys; zet_phys; D_phys; A_phys], param);
 
 % back to ND
 dqdt_dim   = (dX_phys(1:nPos)/scale.L) * scale.tau;
@@ -290,14 +566,15 @@ dzet_dim   = (dX_phys(nPos+nVel+Ne+1 : nPos+nVel+2*Ne) / scale.L) * scale.tau;
 
 off = nPos + nVel + 2*Ne;
 dD_dim     = dX_phys(off+(1:Ne)) * scale.tau;
+dA_dim     = dX_phys(off+Ne+(1:Ne)) * scale.tau;
 
-dXdim = [dqdt_dim; dvdt_dim; dsig_dim; dzet_dim; dD_dim];
+dXdim = [dqdt_dim; dvdt_dim; dsig_dim; dzet_dim; dD_dim; dA_dim];
 end
 
 
 %% ========================= PHYSICAL RHS =========================
 function dxdt = ShellRHS_physical(t, x, param)
-% X = [ q(3N); v(3N); sigma(Ne); zeta(Ne); D(Ne) ]
+% X = [ q(3N); v(3N); sigma(Ne); zeta(Ne); D(Ne); A_edge(Ne) ]
 
 N    = param.N;
 nPos = param.nPos;
@@ -310,15 +587,19 @@ iV1 = iQ2+1;             iV2 = iV1 + nVel - 1;
 iS1 = iV2+1;             iS2 = iS1 + Ne - 1;
 iZ1 = iS2+1;             iZ2 = iZ1 + Ne - 1;
 iD1 = iZ2+1;             iD2 = iD1 + Ne - 1;
+iA1 = iD2+1;             iA2 = iA1 + Ne - 1;
 
 q     = x(iQ1:iQ2);
 v     = x(iV1:iV2);
 sigma = x(iS1:iS2);
 zeta  = x(iZ1:iZ2);
 D     = x(iD1:iD2);
+A_edge = x(iA1:iA2);
 
-% clamp D safely
+% clamp bounded edge states safely
 D = min(max(D,0),1);
+A_edge = min(max(A_edge,0),1);
+dA = activeRecruitmentRHS(A_edge, param);
 
 qMat = reshape(q,3,[])';
 vMat = reshape(v,3,[])';
@@ -336,20 +617,24 @@ nzv = 2*zz/(c^2);
 nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
 nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
 
-% precompute active tension (additive)
+% precompute active edge tension (additive)
 TactVec = activeTension(t, param);
 
-% Edge kinematics wrt fixed L0
+% Edge kinematics with optional active rest-length shortening.
 rij = pos(jEdge,:) - pos(iEdge,:);
 L = sqrt(sum(rij.^2, 2));
 Lsafe = max(L, 1e-18);
 n_hat = rij ./ Lsafe;
 n_hat(L < 1e-18,:) = 0;
 
-L0 = max(param.L0_edge0(:), 1e-18);
+L0_ref = max(param.L0_edge0(:), 1e-18);
+[activeFrac, activeFracDot] = activeRestLengthShorteningForState(t, param, A_edge, dA);
+L0_active = L0_ref .* (1 - activeFrac);
+L0 = max(L0_active, 1e-18);
 stretch = L - L0;
-stretch_dot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2);
-eps_e = stretch ./ L0;
+L0_dot = -L0_ref .* activeFracDot;
+stretch_dot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2) - L0_dot;
+eps_e = stretch ./ L0_ref;
 
 % Passive connection element forces
 g  = max(1 - D, param.g_floor_stiff);
@@ -382,7 +667,23 @@ for dim = 1:3
     Fnet(:,dim) = param.edgeAccumI * Fi(:,dim) + param.edgeAccumJ * Fj(:,dim);
 end
 
+FactiveTraction = activeTractionForces(t, param, N, pos);
+if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
+    FactiveTraction = FactiveTraction - sum(FactiveTraction .* nSurf, 2) .* nSurf;
+end
+Fnet = Fnet + FactiveTraction;
+
 dD = zeros(Ne,1);
+
+% ---- Optional instantaneous cut of the damage ring ----
+if isfield(param,'instantDamage_on') && param.instantDamage_on && ...
+        isfield(param,'damageMask') && any(param.damageMask > 0)
+    if t >= param.instantDamageTime
+        damageEdges = (param.damageMask(:) > 0);
+        tauInstant = max(param.instantDamageTau, 1e-8);
+        dD(damageEdges) = dD(damageEdges) + (1 - D(damageEdges)) ./ tauInstant;
+    end
+end
 
 % ---- Localized damage from total tension (tension-only) ----
 if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'damageMask')
@@ -423,6 +724,13 @@ F_drag  = -param.c_drag * vMat;
 
 Fnet = Fnet + F_surf + F_dampN + F_drag;
 
+% Soft anterior positional boundary condition. This weak tether biases
+% directional retraction without rigidly pinning nodes or adding contact.
+if isfield(param,'anchor_on') && param.anchor_on
+    F_anchor = -param.k_anchor * qMat - param.c_anchor * vMat;
+    Fnet = Fnet + param.anchorNodeMask .* F_anchor;
+end
+
 % dq/dt
 dqdt = reshape(vMat.', [], 1);
 
@@ -430,7 +738,7 @@ dqdt = reshape(vMat.', [], 1);
 dvdt = reshape((Fnet/param.m).',[],1);
 
 % assemble
-dxdt = [dqdt; dvdt; dsigma; dzeta; dD];
+dxdt = [dqdt; dvdt; dsigma; dzeta; dD; dA];
 end
 
 
@@ -443,16 +751,251 @@ if ~isfield(param,'act_on') || ~param.act_on
     return;
 end
 
-A = 1 ./ (1 + exp(-(t - param.tActOn)/max(param.tActTau,eps)));
+A = activeEdgeActivation(t, param);
 
-if isfield(param,'motorMask')
-    T = T + (A * param.Tact_main) .* param.motorMask(:);
-else
-    T = T + (A * param.Tact_main) * ones(Ne,1);
+if ~isfield(param,'activeForceMode') || ~strcmpi(param.activeForceMode, 'posterior-traction')
+    if isfield(param,'motorMask')
+        T = T + (param.Tact_main .* A) .* param.motorMask(:);
+    else
+        T = T + param.Tact_main .* A;
+    end
 end
 
 if isfield(param,'tipMask')
-    T = T + (A * param.Tact_tip) .* param.tipMask(:);
+    T = T + (param.Tact_tip .* A) .* param.tipMask(:);
+end
+end
+
+
+function Fnode = activeTractionForces(t, param, N, pos)
+Fnode = zeros(N,3);
+
+if ~isfield(param,'act_on') || ~param.act_on
+    return;
+end
+if ~isfield(param,'activeForceMode') || ~strcmpi(param.activeForceMode, 'posterior-traction')
+    return;
+end
+
+A = activeEdgeActivation(t, param);
+if isfield(param,'motorMask')
+    edgeAmp = param.Tact_main .* A .* param.motorMask(:);
+else
+    edgeAmp = param.Tact_main .* A;
+end
+
+if isfield(param,'activeStrokeLimit') && isfinite(param.activeStrokeLimit) && param.activeStrokeLimit > 0 && ...
+        isfield(param,'edgeMid0') && nargin >= 4
+    currentEdgeMid = 0.5 * (pos(param.edge_i,:) + pos(param.edge_j,:));
+    posteriorDisp = param.postSign * (currentEdgeMid(:,param.postAxis) - param.edgeMid0(:,param.postAxis));
+
+    strokeTau = 2e-6;
+    if isfield(param,'activeStrokeTau') && isfinite(param.activeStrokeTau) && param.activeStrokeTau > 0
+        strokeTau = param.activeStrokeTau;
+    end
+    strokeFactor = 1 ./ (1 + exp((posteriorDisp - param.activeStrokeLimit) ./ strokeTau));
+    edgeAmp = edgeAmp .* strokeFactor;
+end
+
+posteriorDir = zeros(1,3);
+posteriorDir(param.postAxis) = param.postSign;
+
+nodeAmp = 0.5 * (param.edgeAccumI * edgeAmp + param.edgeAccumJ * edgeAmp);
+Fnode = nodeAmp .* posteriorDir;
+
+if isfield(param,'balanceActiveTraction') && param.balanceActiveTraction
+    Fnode = Fnode - mean(Fnode, 1);
+end
+end
+
+
+function dA = activeRecruitmentRHS(A_edge, param)
+Ne = numel(param.L0_edge0);
+dA = zeros(Ne,1);
+
+if ~isfield(param,'activeRecruitment_on') || ~param.activeRecruitment_on
+    return;
+end
+
+signalMode = 'neighborA';
+if isfield(param,'recruitmentSignalMode') && ~isempty(param.recruitmentSignalMode)
+    signalMode = lower(strtrim(char(param.recruitmentSignalMode)));
+end
+
+switch signalMode
+    case 'neighbora'
+        neighborA = (param.edgeNeighbor * A_edge) ./ max(param.edgeNeighborCount, 1);
+        theta = param.recruitmentThreshold;
+        neighborA = max(neighborA - theta, 0) ./ max(1 - theta, eps);
+    otherwise
+        error('Unknown recruitmentSignalMode "%s". Use "neighborA".', signalMode);
+end
+
+seedMask = edgeMaskVector(param, 'seedMask', Ne, zeros(Ne,1));
+recruitmentMask = edgeMaskVector(param, 'recruitmentMask', Ne, ones(Ne,1));
+
+dA = param.k_seed .* seedMask .* (1 - A_edge) + ...
+     param.k_neighbor .* neighborA .* recruitmentMask .* (1 - A_edge);
+end
+
+
+function [activeFrac, activeFracDot] = activeRestLengthShorteningForState(t, param, A_edge, dA)
+Ne = numel(param.L0_edge0);
+activeFrac = zeros(Ne,1);
+activeFracDot = zeros(Ne,1);
+
+if ~isfield(param,'activeRestLength_on') || ~param.activeRestLength_on
+    return;
+end
+
+if ~isfield(param,'activeRecruitment_on') || ~param.activeRecruitment_on
+    [activeFrac, activeFracDot] = activeRestLengthShortening(t, param);
+    return;
+end
+
+mask = edgeMaskVector(param, 'activeShorteningMask', Ne, ones(Ne,1));
+rawFrac = param.activeShorteningMax .* A_edge .* mask;
+rawFracDot = param.activeShorteningMax .* dA .* mask;
+
+activeFrac = min(max(rawFrac, 0), 0.95);
+activeFracDot = rawFracDot;
+activeFracDot(rawFrac <= 0 | rawFrac >= 0.95) = 0;
+end
+
+
+function mask = edgeMaskVector(param, fieldName, Ne, defaultMask)
+if isfield(param, fieldName) && ~isempty(param.(fieldName))
+    mask = param.(fieldName)(:);
+else
+    mask = defaultMask(:);
+end
+
+if numel(mask) == 1
+    mask = mask * ones(Ne,1);
+elseif numel(mask) ~= Ne
+    error('param.%s must be scalar or have one value per edge.', fieldName);
+end
+end
+
+
+function [activeFrac, activeFracDot] = activeRestLengthShortening(t, param)
+Ne = numel(param.L0_edge0);
+activeFrac = zeros(Ne,1);
+activeFracDot = zeros(Ne,1);
+
+if ~isfield(param,'activeRestLength_on') || ~param.activeRestLength_on
+    return;
+end
+
+if isfield(param,'tActiveRestLengthOn_edge') && numel(param.tActiveRestLengthOn_edge) == Ne
+    tOn = param.tActiveRestLengthOn_edge(:);
+else
+    tOn = param.tActOn * ones(Ne,1);
+end
+
+activationMode = 'exponential';
+if isfield(param,'activeShorteningActivation') && ~isempty(param.activeShorteningActivation)
+    activationMode = lower(strtrim(char(param.activeShorteningActivation)));
+end
+
+switch activationMode
+    case 'exponential'
+        tau = max(param.activeShorteningTau, eps);
+        dtOn = t - tOn;
+        isOn = dtOn >= 0;
+        A = zeros(Ne,1);
+        Adot = zeros(Ne,1);
+        A(isOn) = 1 - exp(-dtOn(isOn) ./ tau);
+        Adot(isOn) = exp(-dtOn(isOn) ./ tau) ./ tau;
+    case {'accelerating', 'power', 'reverse-exponential'}
+        tau = max(param.activeShorteningTau, eps);
+        p = 2;
+        if isfield(param,'activeShorteningAccelPower') && isfinite(param.activeShorteningAccelPower)
+            p = max(param.activeShorteningAccelPower, 1);
+        end
+        dtOn = t - tOn;
+        u = max(dtOn ./ tau, 0);
+        isRamping = u < 1;
+        A = min(u .^ p, 1);
+        Adot = zeros(Ne,1);
+        Adot(isRamping & u > 0) = (p ./ tau) .* u(isRamping & u > 0).^(p - 1);
+    case {'sigmoid', 'delayed-sigmoid'}
+        delay = 0;
+        if isfield(param,'activeShorteningSigmoidDelay') && isfinite(param.activeShorteningSigmoidDelay)
+            delay = param.activeShorteningSigmoidDelay;
+        end
+        sigmoidTau = param.activeShorteningTau;
+        if isfield(param,'activeShorteningSigmoidTau') && isfinite(param.activeShorteningSigmoidTau) && param.activeShorteningSigmoidTau > 0
+            sigmoidTau = param.activeShorteningSigmoidTau;
+        end
+        sigmoidTau = max(sigmoidTau, eps);
+        tMid = tOn + delay;
+        A = 1 ./ (1 + exp(-(t - tMid) ./ sigmoidTau));
+        Adot = (A .* (1 - A)) ./ sigmoidTau;
+        tau = sigmoidTau;
+    otherwise
+        error('Unknown activeShorteningActivation "%s". Use "exponential", "sigmoid", or "accelerating".', activationMode);
+end
+
+if isfield(param,'activeRestLengthWavePulse_on') && param.activeRestLengthWavePulse_on && ...
+        isfield(param,'tActiveRestLengthOff_edge') && numel(param.tActiveRestLengthOff_edge) == Ne
+    tOff = param.tActiveRestLengthOff_edge(:);
+    offTau = tau;
+    if isfield(param,'activeRestLengthWaveOffTau') && isfinite(param.activeRestLengthWaveOffTau) && param.activeRestLengthWaveOffTau > 0
+        offTau = param.activeRestLengthWaveOffTau;
+    end
+    Aoff = 1 ./ (1 + exp((t - tOff) ./ max(offTau, eps)));
+    AoffDot = -(Aoff .* (1 - Aoff)) ./ max(offTau, eps);
+    Adot = Adot .* Aoff + A .* AoffDot;
+    A = A .* Aoff;
+end
+
+if isfield(param,'activeShorteningMask') && ~isempty(param.activeShorteningMask)
+    mask = param.activeShorteningMask(:);
+else
+    mask = ones(Ne,1);
+end
+
+if numel(mask) == 1
+    rawFrac = param.activeShorteningMax * A .* mask;
+    rawFracDot = param.activeShorteningMax * Adot .* mask;
+elseif numel(mask) == Ne
+    rawFrac = param.activeShorteningMax * A .* mask;
+    rawFracDot = param.activeShorteningMax * Adot .* mask;
+else
+    error('param.activeShorteningMask must be scalar or have one value per edge.');
+end
+
+activeFrac = min(max(rawFrac, 0), 0.95);
+activeFracDot = rawFracDot;
+activeFracDot(rawFrac <= 0 | rawFrac >= 0.95) = 0;
+end
+
+
+function A = activeEdgeActivation(t, param)
+Ne = numel(param.L0_edge0);
+
+if isfield(param,'tActOn_edge') && numel(param.tActOn_edge) == Ne
+    tActOn = param.tActOn_edge(:);
+else
+    tActOn = param.tActOn * ones(Ne,1);
+end
+
+Aon = 1 ./ (1 + exp(-(t - tActOn)/max(param.tActTau,eps)));
+
+if isfield(param,'activeWavePulse_on') && param.activeWavePulse_on && ...
+        isfield(param,'tActOff_edge') && numel(param.tActOff_edge) == Ne
+    tActOff = param.tActOff_edge(:);
+    offTau = param.tActTau;
+    if isfield(param,'activeWaveOffTau') && isfinite(param.activeWaveOffTau) && param.activeWaveOffTau > 0
+        offTau = param.activeWaveOffTau;
+    elseif isfield(param,'activeRingOffTau') && isfinite(param.activeRingOffTau) && param.activeRingOffTau > 0
+        offTau = param.activeRingOffTau;
+    end
+    Aoff = 1 ./ (1 + exp((t - tActOff)/max(offTau,eps)));
+    A = Aon .* Aoff;
+else
+    A = Aon;
 end
 end
 
