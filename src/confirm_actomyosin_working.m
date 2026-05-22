@@ -9,10 +9,12 @@ function confirm_actomyosin_working(matFile)
 %   motorMask = (sMid < sCutMain), optionally filtered by edge orientation
 %
 % Outputs one dashboard figure with:
-%   (1) posterior-half velocity ring locations
-%   (2) active rest-length shortening vs time
-%   (3) motor region sanity (subset of edges with motors ON)
-%   (4) posterior-half ring velocity vs time
+%   (1) posterior-band velocity vs time
+%   (2) posterior-band velocity locations
+%   (3) recruitment phase delay between rings
+%   (4) posterior-band velocity magnitude vs time
+%   (5) active rest-length shortening vs time
+%   (6) motor region sanity (subset of edges with motors ON)
 
 if nargin < 1 || isempty(matFile)
     repoRoot = fileparts(fileparts(mfilename('fullpath')));
@@ -22,7 +24,8 @@ end
 close all;
 
 %% ---------------- USER SETTINGS ----------------
-nVelocityRings = 3;   % posterior-half node groups, ordered posterior -> anterior
+velocityRingBandsPct = [0 10; 25 35; 45 55]; % percent distance from posterior tip toward anterior
+nVelocityRings = size(velocityRingBandsPct, 1);
 
 %% ---------------- LOAD ----------------
 S = load(matFile);
@@ -80,22 +83,24 @@ end
 meanActiveShrink = mean(activeFracMotor, 2);
 maxActiveShrink = max(activeFracMotor, [], 2);
 
-%% ---------------- POSTERIOR-HALF RING VELOCITY ----------------
-% Group nodes by initial posterior score, from posterior-most toward anterior.
+%% ---------------- POSTERIOR-BAND RING VELOCITY ----------------
+% Group nodes by percent distance from posterior tip toward anterior.
 % Velocity is along the anterior axis: positive means moving anteriorward.
-posteriorHalfMask = sNodes >= median(sNodes);
-posteriorHalfScores = sNodes(posteriorHalfMask);
-ringEdges = linspace(min(posteriorHalfScores), max(posteriorHalfScores), nVelocityRings + 1);
+posteriorToAnteriorNodeFrac = (max(sNodes) - sNodes) ./ max(range(sNodes), eps);
+posteriorToAnteriorEdgeFrac = (max(sNodes) - sMid) ./ max(range(sNodes), eps);
+ringBands = velocityRingBandsPct ./ 100;
+ringLabels = cell(1, nVelocityRings);
 ringIdNode = zeros(N,1);
 for r = 1:nVelocityRings
-    lo = ringEdges(end-r);
-    hi = ringEdges(end-r+1);
-    if r == 1
-        inRing = posteriorHalfMask & sNodes >= lo & sNodes <= hi;
+    lo = ringBands(r,1);
+    hi = ringBands(r,2);
+    if r == nVelocityRings
+        inRing = posteriorToAnteriorNodeFrac >= lo & posteriorToAnteriorNodeFrac <= hi;
     else
-        inRing = posteriorHalfMask & sNodes >= lo & sNodes < hi;
+        inRing = posteriorToAnteriorNodeFrac >= lo & posteriorToAnteriorNodeFrac < hi;
     end
     ringIdNode(inRing) = r;
+    ringLabels{r} = sprintf('%g-%g%%', velocityRingBandsPct(r,1), velocityRingBandsPct(r,2));
 end
 
 sPos = sg * squeeze(pos(:,:,ax));         % [Nt x N], larger = more posterior
@@ -109,33 +114,121 @@ for r = 1:nVelocityRings
         ringVelocity(:,r) = mean(vAnterior(:,inRing), 2);
     end
 end
+ringVelocityMag = abs(ringVelocity);
+
+%% ---------------- RECRUITMENT PHASE DELAY DIAGNOSTIC ----------------
+ringIdEdge = zeros(Ne,1);
+for r = 1:nVelocityRings
+    lo = ringBands(r,1);
+    hi = ringBands(r,2);
+    if r == nVelocityRings
+        inRing = posteriorToAnteriorEdgeFrac >= lo & posteriorToAnteriorEdgeFrac <= hi;
+    else
+        inRing = posteriorToAnteriorEdgeFrac >= lo & posteriorToAnteriorEdgeFrac < hi;
+    end
+    ringIdEdge(inRing) = r;
+end
+
+if isfield(S,'A_time') && isequal(size(S.A_time), [Nt, Ne])
+    recruitmentTime = min(max(S.A_time, 0), 1);
+    recruitmentThreshold = getParamOrDefault(param, 'recruitmentThreshold', 0.3);
+    recruitmentLabel = 'A_{edge}';
+else
+    maxShortening = max(getParamOrDefault(param, 'activeShorteningMax', 1), eps);
+    recruitmentTime = min(max(activeFracTime ./ maxShortening, 0), 1);
+    recruitmentThreshold = 0.3;
+    recruitmentLabel = 'normalized shortening';
+end
+
+meanRecruitmentRing = nan(Nt, nVelocityRings);
+for r = 1:nVelocityRings
+    inRing = ringIdEdge == r;
+    if any(inRing)
+        meanRecruitmentRing(:,r) = mean(recruitmentTime(:,inRing), 2);
+    end
+end
+
+recruitmentOnset = nan(1, nVelocityRings);
+for r = 1:nVelocityRings
+    idx = find(meanRecruitmentRing(:,r) >= recruitmentThreshold, 1, 'first');
+    if ~isempty(idx)
+        recruitmentOnset(r) = tSol(idx);
+    end
+end
+recruitmentDelay = recruitmentOnset - recruitmentOnset(1);
 
 %% =========================
-% ===== FIGURE (2 x 2) =====
+% ===== FIGURE DASHBOARD ====
 % =========================
-fig4Panel = figure('Color','w','Position',[100 100 1200 850]);
+figDashboard = figure('Color','w','Position',[100 100 1500 850]);
 
 ringColors = lines(nVelocityRings);
 
-% (1) velocity ring locations
-subplot(2,2,1); hold on; grid on; box on;
+% (1) posterior-band velocity
+subplot(2,3,1); hold on; grid on; box on;
+velLeg = cell(1, nVelocityRings);
+for r = 1:nVelocityRings
+    plot(tSol, ringVelocity(:,r)*1e6, 'LineWidth', 1.8, 'Color', ringColors(r,:));
+    velLeg{r} = sprintf('%s, n=%d', ringLabels{r}, ringCounts(r));
+end
+yline(0, ':');
+if isfield(param,'tActOn'), xline(param.tActOn,'--','tActOn'); end
+xlabel('Time (s)');
+ylabel('Anterior-axis velocity (\mum/s)');
+title('Band velocity: anteriorward positive');
+legend(velLeg, 'Location','best');
+
+% (2) velocity ring locations
+subplot(2,3,2); hold on; grid on; box on;
 otherNode = ringIdNode == 0;
 scatter3(nodeCoords(otherNode,1)*1e6, nodeCoords(otherNode,2)*1e6, nodeCoords(otherNode,3)*1e6, ...
     8, [0.78 0.78 0.78], 'filled');
-leg = {'anterior half'};
+locLeg = {'anterior half'};
 for r = 1:nVelocityRings
     inRing = ringIdNode == r;
     scatter3(nodeCoords(inRing,1)*1e6, nodeCoords(inRing,2)*1e6, nodeCoords(inRing,3)*1e6, ...
         16, ringColors(r,:), 'filled');
-    leg{end+1} = sprintf('ring %d', r); %#ok<AGROW>
+    locLeg{end+1} = ringLabels{r}; %#ok<AGROW>
 end
 axis equal; view(3);
 xlabel('x (\mum)'); ylabel('y (\mum)'); zlabel('z (\mum)');
-title('Velocity rings: posterior \rightarrow anterior');
-legend(leg, 'Location','bestoutside');
+title('Velocity bands: percent from posterior tip');
+legend(locLeg, 'Location','bestoutside');
 
-% (2) active rest-length shortening
-subplot(2,2,2); hold on; grid on; box on;
+% (3) recruitment phase delay between rings
+subplot(2,3,3); hold on; grid on; box on;
+for r = 1:nVelocityRings
+    plot(tSol, meanRecruitmentRing(:,r), 'LineWidth', 1.8, 'Color', ringColors(r,:));
+end
+yline(recruitmentThreshold, ':', 'threshold');
+if isfield(param,'tActOn'), xline(param.tActOn,'--','tActOn'); end
+xlabel('Time (s)');
+ylabel(sprintf('Mean %s', recruitmentLabel));
+title('Recruitment phase delay by ring');
+phaseLeg = cell(1, nVelocityRings);
+for r = 1:nVelocityRings
+    if isfinite(recruitmentDelay(r))
+        phaseLeg{r} = sprintf('%s, delay %.1fs', ringLabels{r}, recruitmentDelay(r));
+    else
+        phaseLeg{r} = sprintf('%s, no crossing', ringLabels{r});
+    end
+end
+legend(phaseLeg, 'Location','best');
+
+% (4) posterior-band velocity magnitude
+subplot(2,3,4); hold on; grid on; box on;
+for r = 1:nVelocityRings
+    plot(tSol, ringVelocityMag(:,r)*1e6, 'LineWidth', 1.8, 'Color', ringColors(r,:));
+end
+yline(0, ':');
+if isfield(param,'tActOn'), xline(param.tActOn,'--','tActOn'); end
+xlabel('Time (s)');
+ylabel('Velocity magnitude (\mum/s)');
+title('Band velocity magnitude');
+legend(velLeg, 'Location','best');
+
+% (5) active rest-length shortening
+subplot(2,3,5); hold on; grid on; box on;
 if isfield(param,'activeRestLength_on') && param.activeRestLength_on
     plot(tSol, 100*meanActiveShrink, 'LineWidth',2);
     plot(tSol, 100*maxActiveShrink, '--', 'LineWidth',1.5);
@@ -149,8 +242,8 @@ else
     axis off;
 end
 
-% (3) initial geometry + motor edges (visual sanity)
-subplot(2,2,4); hold on; grid on; box on;
+% (6) initial geometry + motor edges (visual sanity)
+subplot(2,3,6); hold on; grid on; box on;
 scatter3(nodeCoords(:,1)*1e6, nodeCoords(:,2)*1e6, nodeCoords(:,3)*1e6, 8, 'filled');
 rng(1);
 showK = min(3000, Ne);
@@ -166,29 +259,15 @@ axis equal;
 xlabel('x (\mum)'); ylabel('y (\mum)'); zlabel('z (\mum)');
 title('Motor region sanity: edges with motors ON (subset)');
 
-% (4) posterior-half ring velocity
-subplot(2,2,3); hold on; grid on; box on;
-leg = cell(1, nVelocityRings);
-for r = 1:nVelocityRings
-    plot(tSol, ringVelocity(:,r)*1e6, 'LineWidth', 1.8, 'Color', ringColors(r,:));
-    leg{r} = sprintf('ring %d, n=%d', r, ringCounts(r));
-end
-yline(0, ':');
-if isfield(param,'tActOn'), xline(param.tActOn,'--','tActOn'); end
-xlabel('Time (s)');
-ylabel('Anterior-axis velocity (\mum/s)');
-title('Posterior-half ring velocity: anteriorward positive');
-legend(leg, 'Location','best');
-
 %% ---------------- EXPORT DASHBOARD PNG ----------------
 [matDir, matBase] = fileparts(matFile);
-pngFile = fullfile(matDir, [matBase '_4panel.png']);
+pngFile = fullfile(matDir, [matBase '_dashboard.png']);
 try
-    exportgraphics(fig4Panel, pngFile, 'Resolution', 300);
+    exportgraphics(figDashboard, pngFile, 'Resolution', 300);
 catch
-    print(fig4Panel, pngFile, '-dpng', '-r300');
+    print(figDashboard, pngFile, '-dpng', '-r300');
 end
-fprintf('[POSTPROCESS] saved 4-panel dashboard PNG: %s\n', pngFile);
+fprintf('[POSTPROCESS] saved dashboard PNG: %s\n', pngFile);
 
 end
 
@@ -259,7 +338,7 @@ else
     mask = ones(1, Ne);
 end
 
-if numel(mask) == 1
+if isscalar(mask)
     mask = mask * ones(1, Ne);
 elseif numel(mask) ~= Ne
     error('param.activeShorteningMask must be scalar or have one value per edge.');

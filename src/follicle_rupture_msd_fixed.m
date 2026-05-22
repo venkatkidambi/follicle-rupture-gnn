@@ -12,7 +12,7 @@ rng(42);
 
 %% USER-PARAMETERS
 % Simulation resolution / scale
-N = 200;
+N = 300;
 mVal = 1;                 % smaller mass reduces inertial coasting
 R = 125e-6;
 
@@ -21,7 +21,7 @@ kOuter_range = [1, 1];
 cOuter_range = [1, 1];
 
 % Time integration and saved output
-tEnd  = 1800;                    % s
+tEnd  = 900;                    % s
 numSave = 300;                 % saved output frames; solver still adapts internally
 runPostprocess = true;         % set true to generate diagnostic plots after saving
 makeRuptureMotionVideo = true;  % set true to export an MP4 after saving
@@ -39,7 +39,7 @@ simFile = fullfile(outputDir, 'follicleShellSim_test2.mat');
 ruptureVideoFile = fullfile(outputDir, ruptureVideoName);
 
 %% Nodes (ELLIPSOID SURFACE: "football")
-a = 200e-6; b = 80e-6; c = 80e-6;
+a = 500e-6; b = 150e-6; c = 150e-6;
 nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
 
 param.ell_a = a; param.ell_b = b; param.ell_c = c;
@@ -51,7 +51,7 @@ param.postSign = -1;
 % Surface penalty + normal damping
 param.k_surf = 5e-6;     % [N] penalty strength
 param.c_surf = 5e-2;     % [N*s/m] normal damping
-param.c_drag = 0.2;     % [N*s/m] whole-node damping; higher = less post-cut coasting
+param.c_drag = 1e-4;     % [N*s/m] whole-node damping; higher = less post-cut coasting
 param.projectEdgeForcesToSurface = true;
 
 %% Surface edges (shell-only)
@@ -185,8 +185,8 @@ end
 % This contracts selected epithelial edges by shortening their active rest length,
 % while the passive connection model still supplies the stress response.
 param.activeRestLength_on = true;
-param.activeShorteningMax = 0.75;       % maximum fractional rest-length reduction
-param.activeShorteningTau = 100;        % [s] contraction timescale
+param.activeShorteningMax = 0.32;       % maximum fractional rest-length reduction
+param.activeShorteningTau = 1;        % [s] contraction timescale
 param.activeShorteningActivation = 'exponential'; % 'exponential', 'sigmoid', or 'accelerating'
 param.activeShorteningAccelPower = 2; % >1 starts slow then speeds up; 2 = quadratic ramp
 param.activeShorteningSigmoidDelay = 0; % [s] added to each edge's activation time for sigmoid midpoint
@@ -197,12 +197,16 @@ param.activeShorteningMask = param.motorMask; % per-edge weights; can be any val
 % When enabled, shortening spreads through edge-neighbor coupling instead of
 % the prescribed activeRestLengthShortening(t,param) wave below.
 param.activeRecruitment_on = true;
-param.k_seed = 1/0.1;                         % [1/s] autonomous seed activation
-param.k_neighbor = 1/240;                    % [1/s] neighbor recruitment
+param.k_seed = 1/60;                         % [1/s] autonomous seed activation
+param.k_neighbor = 1/90;                    % [1/s] neighbor recruitment
+param.k_strainRateRecruit = 1/120;            % [1/s] combined neighbor/strain-rate recruitment
 param.recruitmentThreshold = 0.03;             % suppress tiny neighbor activation leaks
+param.recruitmentStrainRateThreshold = 1e-4; % [1/s] ignore tiny strain-rate noise
+param.recruitmentStrainRateScale = 1e-3;     % [1/s] strain-rate signal saturation scale
+param.recruitmentStrainRateGain = 2;         % strain-rate amplification near recruitment front
 param.seedMask = param.tipMask;           % default posterior/tip seed
 param.recruitmentMask = param.motorMask;     % recruitable active motor domain
-param.recruitmentSignalMode = 'neighborA';   % reserved for future signal modes
+param.recruitmentSignalMode = 'neighborA_plus_strainRate';   % 'neighborA' or 'neighborA_plus_strainRate'
 
 % Optional wave for active rest-length shortening. This is independent of
 % force-based activeWave_on, so preferred-length contraction can travel even
@@ -437,7 +441,7 @@ function param = configureActiveRestLengthWave(param, sNodes, sMid, Ne)
 if isfield(param,'activeRestLengthWave_on') && param.activeRestLengthWave_on
     sRestWaveStart = prctile(sNodes, param.activeRestLengthWaveStartPct);
     restMaskForDelay = param.activeShorteningMask(:);
-    if numel(restMaskForDelay) == 1
+    if isscalar(restMaskForDelay)
         restEdgeForDelay = repmat(restMaskForDelay > 0, Ne, 1);
     elseif numel(restMaskForDelay) == Ne
         restEdgeForDelay = restMaskForDelay > 0;
@@ -599,7 +603,6 @@ A_edge = x(iA1:iA2);
 % clamp bounded edge states safely
 D = min(max(D,0),1);
 A_edge = min(max(A_edge,0),1);
-dA = activeRecruitmentRHS(A_edge, param);
 
 qMat = reshape(q,3,[])';
 vMat = reshape(v,3,[])';
@@ -628,12 +631,15 @@ n_hat = rij ./ Lsafe;
 n_hat(L < 1e-18,:) = 0;
 
 L0_ref = max(param.L0_edge0(:), 1e-18);
+geometricStretchDot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2);
+strainRate = geometricStretchDot ./ L0_ref;
+dA = activeRecruitmentRHS(A_edge, param, strainRate);
 [activeFrac, activeFracDot] = activeRestLengthShorteningForState(t, param, A_edge, dA);
 L0_active = L0_ref .* (1 - activeFrac);
 L0 = max(L0_active, 1e-18);
 stretch = L - L0;
 L0_dot = -L0_ref .* activeFracDot;
-stretch_dot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2) - L0_dot;
+stretch_dot = geometricStretchDot - L0_dot;
 eps_e = stretch ./ L0_ref;
 
 % Passive connection element forces
@@ -809,12 +815,17 @@ end
 end
 
 
-function dA = activeRecruitmentRHS(A_edge, param)
+function dA = activeRecruitmentRHS(A_edge, param, strainRate)
 Ne = numel(param.L0_edge0);
 dA = zeros(Ne,1);
 
 if ~isfield(param,'activeRecruitment_on') || ~param.activeRecruitment_on
     return;
+end
+if nargin < 3 || isempty(strainRate)
+    strainRate = zeros(Ne,1);
+else
+    strainRate = strainRate(:);
 end
 
 signalMode = 'neighborA';
@@ -826,16 +837,31 @@ switch signalMode
     case 'neighbora'
         neighborA = (param.edgeNeighbor * A_edge) ./ max(param.edgeNeighborCount, 1);
         theta = param.recruitmentThreshold;
+        neighborSignal = max(neighborA - theta, 0) ./ max(1 - theta, eps);
+        recruitmentRate = param.k_neighbor;
+    case 'neighbora_plus_strainrate'
+        neighborA = (param.edgeNeighbor * A_edge) ./ max(param.edgeNeighborCount, 1);
+        theta = param.recruitmentThreshold;
         neighborA = max(neighborA - theta, 0) ./ max(1 - theta, eps);
+
+        threshold = param.recruitmentStrainRateThreshold;
+        scale = param.recruitmentStrainRateScale;
+        strainRateSignal = max(abs(strainRate) - threshold, 0);
+        strainRateSignal = min(strainRateSignal ./ max(scale, eps), 1);
+
+        alpha = param.recruitmentStrainRateGain;
+        neighborSignal = neighborA .* (1 + alpha * strainRateSignal);
+        neighborSignal = min(neighborSignal, 1);
+        recruitmentRate = param.k_strainRateRecruit;
     otherwise
-        error('Unknown recruitmentSignalMode "%s". Use "neighborA".', signalMode);
+        error('Unknown recruitmentSignalMode "%s". Use "neighborA" or "neighborA_plus_strainRate".', signalMode);
 end
 
 seedMask = edgeMaskVector(param, 'seedMask', Ne, zeros(Ne,1));
 recruitmentMask = edgeMaskVector(param, 'recruitmentMask', Ne, ones(Ne,1));
 
 dA = param.k_seed .* seedMask .* (1 - A_edge) + ...
-     param.k_neighbor .* neighborA .* recruitmentMask .* (1 - A_edge);
+     recruitmentRate .* neighborSignal .* recruitmentMask .* (1 - A_edge);
 end
 
 
@@ -870,7 +896,7 @@ else
     mask = defaultMask(:);
 end
 
-if numel(mask) == 1
+if isscalar(mask)
     mask = mask * ones(Ne,1);
 elseif numel(mask) ~= Ne
     error('param.%s must be scalar or have one value per edge.', fieldName);
@@ -956,7 +982,7 @@ else
     mask = ones(Ne,1);
 end
 
-if numel(mask) == 1
+if isscalar(mask)
     rawFrac = param.activeShorteningMax * A .* mask;
     rawFracDot = param.activeShorteningMax * Adot .* mask;
 elseif numel(mask) == Ne
@@ -1127,15 +1153,25 @@ end
 %% football nodes
 function X = genEllipsoidSurfaceNodes(N, a, b, c, center)
 if nargin < 5, center = [0 0 0]; end
-i = (0:N-1)';
+oversampleFactor = 20;
+M = max(oversampleFactor * N, 2000);
+i = (0:M-1)';
 phi = (1 + sqrt(5)) / 2;
 theta = 2*pi*i/phi;
-z = 1 - 2*(i+0.5)/N;
+z = 1 - 2*(i+0.5)/M;
 r = sqrt(max(0, 1 - z.^2));
 u = [r.*cos(theta), r.*sin(theta), z];
-den = (u(:,1).^2)/(a^2) + (u(:,2).^2)/(b^2) + (u(:,3).^2)/(c^2);
-t = 1 ./ sqrt(den);
-X = u .* t + center;
+
+% Area-weight candidates for the linear sphere-to-ellipsoid map. Uniform
+% directions alone overpopulate visually compressed regions on elongated
+% ellipsoids; equal-area quantiles give a more even surface point cloud.
+areaWeight = a*b*c * sqrt((u(:,1)./a).^2 + (u(:,2)./b).^2 + (u(:,3)./c).^2);
+cdf = cumsum(areaWeight);
+targets = ((0:N-1)' + 0.5) * (cdf(end) / N);
+idx = interp1(cdf, (1:M)', targets, 'nearest', 'extrap');
+idx = min(max(idx, 1), M);
+
+X = [a*u(idx,1), b*u(idx,2), c*u(idx,3)] + center;
 end
 
 
