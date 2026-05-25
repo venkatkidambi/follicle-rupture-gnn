@@ -14,13 +14,17 @@ rng(42);
 % Simulation resolution / scale
 N = 300;
 mVal = 1;                 % smaller mass reduces inertial coasting
+useExperimentalNodeData = false;
+experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
+experimentalCoordinateScale = 1e-6;  % spreadsheet coordinates are in microns
+experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
 
 % Passive edge material parameters
 kOuter_range = [1, 1];
 cOuter_range = [1, 1];
 
 % Time integration and saved output
-tEnd  = 900;                    % s
+tEnd  = 1800;                    % s
 numSave = 300;                 % saved output frames; solver still adapts internally
 runPostprocess = true;         % set true to generate diagnostic plots after saving
 makeRuptureMotionVideo = true;  % set true to export an MP4 after saving
@@ -31,18 +35,39 @@ ruptureVideoName = 'follicleRupture_motion.mp4';
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 outputDir = fullfile(repoRoot, 'results');
+inputNodeDataDir = fullfile(repoRoot, 'input_node_data');
 if ~exist(outputDir, 'dir')
     mkdir(outputDir);
 end
+if ~exist(inputNodeDataDir, 'dir')
+    mkdir(inputNodeDataDir);
+end
 simFile = fullfile(outputDir, 'follicleShellSim_test2.mat');
 ruptureVideoFile = fullfile(outputDir, ruptureVideoName);
+experimentalNodeDataFile = fullfile(inputNodeDataDir, experimentalNodeDataFileName);
 
-%% Nodes (ELLIPSOID SURFACE: "football")
-a = 500e-6; b = 150e-6; c = 150e-6;
-L_scale = b;              % transverse follicle radius scale
-nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
+%% Nodes
+if useExperimentalNodeData
+    [nodeCoords, experimentalCellIds] = loadExperimentalNodeCoords( ...
+        experimentalNodeDataFile, experimentalCoordinateScale, experimentalCenterMode);
+    N = size(nodeCoords, 1);
+    [a, b, c] = estimateAxisAlignedSemiAxes(nodeCoords);
+    L_scale = median([a b c]);  % representative experimental radius scale
+    geometryTitle = 'Experimental surface nodes';
+else
+    a = 500e-6; b = 150e-6; c = 150e-6;
+    L_scale = b;              % transverse follicle radius scale
+    nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
+    experimentalCellIds = [];
+    geometryTitle = 'Ellipsoid surface nodes';
+end
 
 param.ell_a = a; param.ell_b = b; param.ell_c = c;
+param.useExperimentalNodeData = useExperimentalNodeData;
+param.experimentalNodeDataFile = experimentalNodeDataFile;
+param.experimentalCoordinateScale = experimentalCoordinateScale;
+param.experimentalCenterMode = experimentalCenterMode;
+param.experimentalCellIds = experimentalCellIds;
 
 % Posterior axis convention
 param.postAxis = 1;
@@ -64,7 +89,7 @@ Ne = size(edgeList,1);
 
 if runPostprocess
     figure; scatter3(nodeCoords(:,1),nodeCoords(:,2),nodeCoords(:,3),10,'filled');
-    axis equal; grid on; title('Ellipsoid surface nodes');
+    axis equal; grid on; title(geometryTitle);
 end
 
 param.N = N;
@@ -1171,6 +1196,74 @@ idx = interp1(cdf, (1:M)', targets, 'nearest', 'extrap');
 idx = min(max(idx, 1), M);
 
 X = [a*u(idx,1), b*u(idx,2), c*u(idx,3)] + center;
+end
+
+
+function [nodeCoords, cellIds] = loadExperimentalNodeCoords(xlsxFile, coordinateScale, centerMode)
+if nargin < 2 || isempty(coordinateScale)
+    coordinateScale = 1;
+end
+if nargin < 3 || isempty(centerMode)
+    centerMode = 'median';
+end
+if ~isfile(xlsxFile)
+    error('Experimental node data file not found: %s', xlsxFile);
+end
+
+try
+    raw = readmatrix(xlsxFile);
+catch
+    raw = xlsread(xlsxFile);
+end
+if size(raw, 2) < 4
+    error('Experimental node data must contain Cell ID, x, y, z in the first four columns.');
+end
+
+cellIds = raw(:,1);
+nodeCoords = raw(:,2:4) * coordinateScale;
+validRows = all(isfinite(nodeCoords), 2);
+cellIds = cellIds(validRows);
+nodeCoords = nodeCoords(validRows, :);
+[nodeCoords, uniqueIdx] = unique(nodeCoords, 'rows', 'stable');
+cellIds = cellIds(uniqueIdx);
+
+if size(nodeCoords, 1) < 4
+    error('Experimental node data must contain at least four valid xyz rows.');
+end
+
+if isstring(centerMode)
+    centerModeKey = lower(char(centerMode));
+else
+    centerModeKey = lower(centerMode);
+end
+switch centerModeKey
+    case 'median'
+        nodeCoords = nodeCoords - median(nodeCoords, 1, 'omitnan');
+    case 'mean'
+        nodeCoords = nodeCoords - mean(nodeCoords, 1, 'omitnan');
+    case 'none'
+        % Keep spreadsheet coordinates as-is.
+    otherwise
+        error('Unknown experimentalCenterMode "%s". Use "median", "mean", or "none".', centerMode);
+end
+
+fprintf('[GEOMETRY] loaded %d experimental nodes from %s\n', size(nodeCoords,1), xlsxFile);
+end
+
+
+function [a, b, c] = estimateAxisAlignedSemiAxes(nodeCoords)
+semiAxes = max(abs(nodeCoords), [], 1, 'omitnan');
+spanAxes = 0.5 * range(nodeCoords, 1);
+semiAxes = max(semiAxes, spanAxes);
+semiAxes(~isfinite(semiAxes) | semiAxes <= 0) = median(semiAxes(isfinite(semiAxes) & semiAxes > 0));
+
+if any(~isfinite(semiAxes) | semiAxes <= 0)
+    error('Could not estimate positive semi-axes from experimental node coordinates.');
+end
+
+a = semiAxes(1);
+b = semiAxes(2);
+c = semiAxes(3);
 end
 
 

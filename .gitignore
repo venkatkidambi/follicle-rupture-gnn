@@ -4,4 +4,15 @@
 *.fig
 .DS_Store
 **/.DS_Store
-results/
+
+# Generated simulation outputs are local-only.
+results/*
+!results/.gitkeep
+!results/examples/
+!results/examples/**
+
+# Experimental spreadsheets/raw node data are local-only.
+input_node_data/*
+!input_node_data/.gitkeep
+!input_node_data/examples/
+!input_node_data/examples/**
