@@ -82,6 +82,8 @@ for k = 1:frameSkip:Nt
     P = nodeCoords + U;
     C = median(P, 1, 'omitnan');
     Pc_um = (P - C) * 1e6;
+    disp_um = sqrt(sum(U.^2, 2)) * 1e6;
+    disp_um_finite = disp_um(isfinite(disp_um));
 
     d = P(i2,:) - P(i1,:);
     L = sqrt(sum(d.^2, 2));
@@ -127,10 +129,19 @@ for k = 1:frameSkip:Nt
     xlabel(ax,''); ylabel(ax,''); zlabel(ax,'');
 
     [maxEps, p95Eps] = damage_strain_summary(epsEdge, damageEdge);
+    if isempty(disp_um_finite)
+        medianDisp = NaN;
+        maxDisp = NaN;
+    else
+        medianDisp = median(disp_um_finite);
+        maxDisp = max(disp_um_finite);
+    end
 
     titleText = sprintf(['Follicle rupture shell | t = %.2f s | ', ...
-        'damage broken = %.2f (%d/%d) | max/p95 strain = %.3g / %.3g'], ...
-        tSol(k), damageFrac, nDamageBroken, nDamageEdges, maxEps, p95Eps);
+        'damage broken = %.2f (%d/%d) | max/p95 strain = %.3g / %.3g | ', ...
+        'median/max disp = %.2f / %.2f um'], ...
+        tSol(k), damageFrac, nDamageBroken, nDamageEdges, maxEps, p95Eps, ...
+        medianDisp, maxDisp);
 
     title(ax, titleText, ...
         'FontWeight','bold', 'FontSize', 10);

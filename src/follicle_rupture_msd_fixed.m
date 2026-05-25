@@ -14,10 +14,16 @@ rng(42);
 % Simulation resolution / scale
 N = 300;
 mVal = 1;                 % smaller mass reduces inertial coasting
-useExperimentalNodeData = false;
+useExperimentalNodeData = true;
 experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
 experimentalCoordinateScale = 1e-6;  % spreadsheet coordinates are in microns
 experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
+experimentalOrientMode = 'principal-axes'; % 'principal-axes' aligns long axis to model x-axis
+experimentalLongAxisSign = -1;        % set 1 to flip experimental anterior/posterior ends
+experimentalSurfaceConstraintMode = 'project-ellipsoid'; % project forces + damp normal velocity, but do not snap nodes
+experimentalAnchorOn = false;          % measured node clouds should not have a frozen anterior shell
+experimentalEdgeMode = 'knn';          % 'knn' connects all measured nodes; 'hull' uses convex hull only
+experimentalNeighborCount = 6;         % local neighbors per measured node for 'knn' edge mode
 
 % Passive edge material parameters
 kOuter_range = [1, 1];
@@ -50,8 +56,10 @@ experimentalNodeDataFile = fullfile(inputNodeDataDir, experimentalNodeDataFileNa
 if useExperimentalNodeData
     [nodeCoords, experimentalCellIds] = loadExperimentalNodeCoords( ...
         experimentalNodeDataFile, experimentalCoordinateScale, experimentalCenterMode);
+    nodeCoords = orientExperimentalNodeCoords( ...
+        nodeCoords, experimentalOrientMode, experimentalLongAxisSign);
     N = size(nodeCoords, 1);
-    [a, b, c] = estimateAxisAlignedSemiAxes(nodeCoords);
+    [a, b, c] = fitAxisAlignedEllipsoidSemiAxes(nodeCoords);
     L_scale = median([a b c]);  % representative experimental radius scale
     geometryTitle = 'Experimental surface nodes';
 else
@@ -67,6 +75,12 @@ param.useExperimentalNodeData = useExperimentalNodeData;
 param.experimentalNodeDataFile = experimentalNodeDataFile;
 param.experimentalCoordinateScale = experimentalCoordinateScale;
 param.experimentalCenterMode = experimentalCenterMode;
+param.experimentalOrientMode = experimentalOrientMode;
+param.experimentalLongAxisSign = experimentalLongAxisSign;
+param.experimentalSurfaceConstraintMode = experimentalSurfaceConstraintMode;
+param.experimentalAnchorOn = experimentalAnchorOn;
+param.experimentalEdgeMode = experimentalEdgeMode;
+param.experimentalNeighborCount = experimentalNeighborCount;
 param.experimentalCellIds = experimentalCellIds;
 
 % Posterior axis convention
@@ -77,14 +91,24 @@ param.postSign = -1;
 param.k_surf = 5e-6;     % [N] penalty strength
 param.c_surf = 5e-2;     % [N*s/m] normal damping
 param.c_drag = 1e-4;     % [N*s/m] whole-node damping; higher = less post-cut coasting
-param.projectEdgeForcesToSurface = true;
+if useExperimentalNodeData
+    param.surfaceConstraintMode = experimentalSurfaceConstraintMode;
+    param.projectEdgeForcesToSurface = true;
+else
+    param.surfaceConstraintMode = 'ellipsoid';
+    param.projectEdgeForcesToSurface = true;
+end
 
-%% Surface edges (shell-only)
-DT = delaunayTriangulation(nodeCoords);
-F = freeBoundary(DT);   % [nFaces x 3]
-allEdges = [F(:,[1 2]); F(:,[2 3]); F(:,[3 1])];
-allEdges = sort(allEdges,2);
-edgeList = unique(allEdges,'rows');
+%% Surface/local edges (shell-only)
+if useExperimentalNodeData
+    edgeList = buildExperimentalEdgeList(nodeCoords, experimentalEdgeMode, experimentalNeighborCount);
+else
+    DT = delaunayTriangulation(nodeCoords);
+    F = freeBoundary(DT);   % [nFaces x 3]
+    allEdges = [F(:,[1 2]); F(:,[2 3]); F(:,[3 1])];
+    allEdges = sort(allEdges,2);
+    edgeList = unique(allEdges,'rows');
+end
 Ne = size(edgeList,1);
 
 if runPostprocess
@@ -106,6 +130,14 @@ param.edgeAccumI = sparse(param.edge_i, (1:Ne)',  1, N, Ne);
 param.edgeAccumJ = sparse(param.edge_j, (1:Ne)',  1, N, Ne);
 param.L0_edge0 = sqrt(sum((nodeCoords(E(:,2),:) - nodeCoords(E(:,1),:)).^2, 2));
 edgeNodeIncidence = sparse([param.edge_i; param.edge_j], [(1:Ne)'; (1:Ne)'], 1, N, Ne);
+nodeDegree = full(sum(edgeNodeIncidence, 2));
+fprintf('[MESH] nodes = %d | edges = %d | edge length median/p95/max = %.3g/%.3g/%.3g um | isolated nodes = %d\n', ...
+    N, Ne, median(param.L0_edge0) * 1e6, prctile(param.L0_edge0, 95) * 1e6, ...
+    max(param.L0_edge0) * 1e6, nnz(nodeDegree == 0));
+if any(nodeDegree == 0)
+    warning('follicle_rupture:isolatedNodes', ...
+        'Mesh contains %d isolated nodes that cannot move mechanically.', nnz(nodeDegree == 0));
+end
 param.edgeNeighbor = spones(edgeNodeIncidence' * edgeNodeIncidence);
 param.edgeNeighbor = param.edgeNeighbor - speye(Ne);
 param.edgeNeighbor = spones(param.edgeNeighbor);
@@ -246,7 +278,11 @@ param.activeRestLengthWaveOffTau = 1;          % [s] smooth recovery timescale
 
 % Optional weak anterior anchoring. This is a soft positional boundary
 % condition to stabilize directional epithelial retraction, not a rigid pin.
-param.anchor_on = true;
+if useExperimentalNodeData
+    param.anchor_on = experimentalAnchorOn;
+else
+    param.anchor_on = true;
+end
 param.anchorPct = 10;          % anterior-most percentile of nodes
 param.k_anchor = 10;        % weak positional tether stiffness
 param.c_anchor = 1;        % anchor damping
@@ -634,15 +670,32 @@ pos  = param.nodeCoords + qMat;
 iEdge = param.edge_i;
 jEdge = param.edge_j;
 
-% Ellipsoid signed error and outward normals at current node positions
-a = param.ell_a; b = param.ell_b; c = param.ell_c;
-xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
-fSurf = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
-nxv = 2*xx/(a^2);
-nyv = 2*yy/(b^2);
-nzv = 2*zz/(c^2);
-nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
-nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
+surfaceConstraintMode = 'ellipsoid';
+if isfield(param,'surfaceConstraintMode') && ~isempty(param.surfaceConstraintMode)
+    surfaceConstraintMode = lower(strtrim(char(param.surfaceConstraintMode)));
+end
+if ~ismember(surfaceConstraintMode, {'ellipsoid', 'project-ellipsoid', 'none', 'off'})
+    error('Unknown surfaceConstraintMode "%s". Use "ellipsoid", "project-ellipsoid", or "none".', surfaceConstraintMode);
+end
+useEllipsoidNormals = any(strcmp(surfaceConstraintMode, {'ellipsoid', 'project-ellipsoid'}));
+useEllipsoidPenalty = strcmp(surfaceConstraintMode, 'ellipsoid');
+useEllipsoidNormalDamping = useEllipsoidNormals;
+
+% Ellipsoid signed error and outward normals at current node positions.
+% Experimental node clouds can keep their measured shape by disabling this.
+if useEllipsoidNormals
+    a = param.ell_a; b = param.ell_b; c = param.ell_c;
+    xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
+    fSurf = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
+    nxv = 2*xx/(a^2);
+    nyv = 2*yy/(b^2);
+    nzv = 2*zz/(c^2);
+    nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
+    nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
+else
+    fSurf = zeros(N,1);
+    nSurf = zeros(N,3);
+end
 
 % precompute active edge tension (additive)
 TactVec = activeTension(t, param);
@@ -685,7 +738,7 @@ Fedge = sig_total .* n_hat;
 Fi = Fedge;
 Fj = -Fedge;
 
-if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
+if useEllipsoidNormals && isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
     nI = nSurf(iEdge,:);
     nJ = nSurf(jEdge,:);
     Fi = Fi - sum(Fi .* nI, 2) .* nI;
@@ -698,7 +751,7 @@ for dim = 1:3
 end
 
 FactiveTraction = activeTractionForces(t, param, N, pos);
-if isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
+if useEllipsoidNormals && isfield(param,'projectEdgeForcesToSurface') && param.projectEdgeForcesToSurface
     FactiveTraction = FactiveTraction - sum(FactiveTraction .* nSurf, 2) .* nSurf;
 end
 Fnet = Fnet + FactiveTraction;
@@ -746,10 +799,16 @@ if isfield(param,'tipPriming_on') && param.tipPriming_on && isfield(param,'damag
     dD(damageEdges) = dD(damageEdges) + (A * param.tipPrimingRate) .* (1 - D(damageEdges));
 end
 
-%% ===== Surface constraint: ellipsoid manifold via penalty + damping =====
-F_surf  = -param.k_surf * fSurf .* nSurf;
-vN      = sum(vMat .* nSurf, 2);
-F_dampN = -param.c_surf * (vN .* nSurf);
+%% ===== Optional surface constraint: ellipsoid manifold via penalty + damping =====
+F_surf = zeros(N,3);
+F_dampN = zeros(N,3);
+if useEllipsoidPenalty
+    F_surf  = -param.k_surf * fSurf .* nSurf;
+end
+if useEllipsoidNormalDamping
+    vN      = sum(vMat .* nSurf, 2);
+    F_dampN = -param.c_surf * (vN .* nSurf);
+end
 F_drag  = -param.c_drag * vMat;
 
 Fnet = Fnet + F_surf + F_dampN + F_drag;
@@ -1199,6 +1258,55 @@ X = [a*u(idx,1), b*u(idx,2), c*u(idx,3)] + center;
 end
 
 
+function edgeList = buildExperimentalEdgeList(nodeCoords, edgeMode, neighborCount)
+if nargin < 2 || isempty(edgeMode)
+    edgeMode = 'knn';
+end
+if nargin < 3 || isempty(neighborCount)
+    neighborCount = 6;
+end
+
+if isstring(edgeMode)
+    edgeModeKey = lower(char(edgeMode));
+else
+    edgeModeKey = lower(edgeMode);
+end
+
+switch edgeModeKey
+    case {'hull', 'convex-hull', 'convex_hull'}
+        DT = delaunayTriangulation(nodeCoords);
+        F = freeBoundary(DT);
+        allEdges = [F(:,[1 2]); F(:,[2 3]); F(:,[3 1])];
+        edgeList = unique(sort(allEdges, 2), 'rows');
+    case {'knn', 'nearest', 'nearest-neighbor', 'nearest_neighbor'}
+        N = size(nodeCoords, 1);
+        k = max(1, min(round(neighborCount), N - 1));
+        dist2 = squaredDistanceMatrix(nodeCoords);
+        dist2(1:N+1:end) = inf;
+        edges = zeros(N * k, 2);
+        row0 = 0;
+        for nodeIdx = 1:N
+            [~, order] = sort(dist2(nodeIdx,:), 'ascend');
+            nbr = order(1:k).';
+            edges(row0 + (1:k), :) = [repmat(nodeIdx, k, 1), nbr];
+            row0 = row0 + k;
+        end
+        edgeList = unique(sort(edges, 2), 'rows');
+    otherwise
+        error('Unknown experimentalEdgeMode "%s". Use "knn" or "hull".', edgeMode);
+end
+
+fprintf('[MESH] experimental edge mode = %s\n', edgeModeKey);
+end
+
+
+function dist2 = squaredDistanceMatrix(X)
+rowNorm2 = sum(X.^2, 2);
+dist2 = rowNorm2 + rowNorm2.' - 2 * (X * X.');
+dist2 = max(dist2, 0);
+end
+
+
 function [nodeCoords, cellIds] = loadExperimentalNodeCoords(xlsxFile, coordinateScale, centerMode)
 if nargin < 2 || isempty(coordinateScale)
     coordinateScale = 1;
@@ -1210,11 +1318,7 @@ if ~isfile(xlsxFile)
     error('Experimental node data file not found: %s', xlsxFile);
 end
 
-try
-    raw = readmatrix(xlsxFile);
-catch
-    raw = xlsread(xlsxFile);
-end
+raw = readmatrix(xlsxFile);
 if size(raw, 2) < 4
     error('Experimental node data must contain Cell ID, x, y, z in the first four columns.');
 end
@@ -1248,6 +1352,83 @@ switch centerModeKey
 end
 
 fprintf('[GEOMETRY] loaded %d experimental nodes from %s\n', size(nodeCoords,1), xlsxFile);
+end
+
+
+function nodeCoords = orientExperimentalNodeCoords(nodeCoords, orientMode, longAxisSign)
+if nargin < 2 || isempty(orientMode)
+    orientMode = 'none';
+end
+if nargin < 3 || isempty(longAxisSign)
+    longAxisSign = 1;
+end
+
+if isstring(orientMode)
+    orientModeKey = lower(char(orientMode));
+else
+    orientModeKey = lower(orientMode);
+end
+
+switch orientModeKey
+    case {'none', 'off'}
+        return;
+    case {'principal-axes', 'principal_axes', 'pca'}
+        if ~isscalar(longAxisSign) || ~ismember(longAxisSign, [-1 1])
+            error('experimentalLongAxisSign must be 1 or -1.');
+        end
+
+        [~, ~, principalAxes] = svd(nodeCoords, 'econ');
+
+        % SVD axis signs are arbitrary. Make them deterministic before the
+        % optional anterior/posterior flip so repeated runs orient the same.
+        for axisIdx = 1:size(principalAxes, 2)
+            [~, dominantCoord] = max(abs(principalAxes(:,axisIdx)));
+            if principalAxes(dominantCoord, axisIdx) < 0
+                principalAxes(:,axisIdx) = -principalAxes(:,axisIdx);
+            end
+        end
+        if det(principalAxes) < 0
+            principalAxes(:,3) = -principalAxes(:,3);
+        end
+
+        nodeCoords = nodeCoords * principalAxes;
+        nodeCoords(:,1) = longAxisSign * nodeCoords(:,1);
+
+        fprintf(['[GEOMETRY] oriented experimental nodes with principal axes ', ...
+                 '(long axis -> x, posterior model end is -x)\n']);
+    otherwise
+        error('Unknown experimentalOrientMode "%s". Use "principal-axes" or "none".', orientMode);
+end
+end
+
+
+function [a, b, c] = fitAxisAlignedEllipsoidSemiAxes(nodeCoords)
+axisWeights = [nodeCoords(:,1).^2, nodeCoords(:,2).^2, nodeCoords(:,3).^2];
+validRows = all(isfinite(axisWeights), 2);
+axisWeights = axisWeights(validRows, :);
+
+if size(axisWeights, 1) < 4
+    error('Could not fit ellipsoid: at least four finite xyz rows are required.');
+end
+
+invAxesSquared = axisWeights \ ones(size(axisWeights, 1), 1);
+if any(~isfinite(invAxesSquared) | invAxesSquared <= 0)
+    warning('follicle_rupture:ellipsoidFitFallback', ...
+        'Least-squares ellipsoid fit was not positive; using coordinate-span semi-axes instead.');
+    [a, b, c] = estimateAxisAlignedSemiAxes(nodeCoords);
+    return;
+end
+
+semiAxes = sqrt(1 ./ invAxesSquared(:)).';
+
+if any(~isfinite(semiAxes) | semiAxes <= 0)
+    error('Could not estimate positive semi-axes from fitted experimental node coordinates.');
+end
+
+a = semiAxes(1);
+b = semiAxes(2);
+c = semiAxes(3);
+fprintf('[GEOMETRY] fitted ellipsoid semi-axes: a=%.3g, b=%.3g, c=%.3g m\n', a, b, c);
 end
 
 

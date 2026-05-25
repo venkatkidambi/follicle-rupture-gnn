@@ -93,6 +93,33 @@ makeRuptureMotionVideo = false;
 For a nicer final run, increase `N`, `tEnd`, and `numSave`, then turn the
 dashboard or movie back on.
 
+## Experimental Real Node Data
+
+Real node data support is currently **work in progress**. The code can load a
+spreadsheet from `input_node_data/` when `useExperimentalNodeData = true`, but
+the geometry, edge graph, force projection, and parameter scales still need
+careful validation for each dataset.
+
+Expected spreadsheet layout:
+
+```text
+Cell ID, x, y, z
+```
+
+Current experimental-data handling:
+
+- centers and scales the spreadsheet coordinates
+- orients the long principal axis to the model `x` axis
+- optionally flips the anterior-posterior direction with
+  `experimentalLongAxisSign`
+- fits an ellipsoid for tangent-plane force projection
+- builds a local nearest-neighbor edge graph instead of using only the convex
+  hull
+
+Treat outputs from real-node mode as diagnostic rather than final. Check the
+printed `[GEOMETRY]` and `[MESH]` lines, inspect the initial geometry, and use
+short test runs before relying on rupture dynamics.
+
 ## Preferred Mode: Rest-Length Shortening
 
 This is the recommended mode.
@@ -452,4 +479,3 @@ If everything ruptures immediately:
 4. Increase resolution and duration for the final run.
 5. Use the legacy active-tension mode only when you specifically want to compare
    against the older force-driven mechanism.
-
