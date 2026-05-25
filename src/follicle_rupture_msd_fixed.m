@@ -14,7 +14,6 @@ rng(42);
 % Simulation resolution / scale
 N = 300;
 mVal = 1;                 % smaller mass reduces inertial coasting
-R = 125e-6;
 
 % Passive edge material parameters
 kOuter_range = [1, 1];
@@ -40,6 +39,7 @@ ruptureVideoFile = fullfile(outputDir, ruptureVideoName);
 
 %% Nodes (ELLIPSOID SURFACE: "football")
 a = 500e-6; b = 150e-6; c = 150e-6;
+L_scale = b;              % transverse follicle radius scale
 nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
 
 param.ell_a = a; param.ell_b = b; param.ell_c = c;
@@ -263,7 +263,6 @@ param.g_floor_stiff = 0;        % allow fully failed
 param.g_floor_damp  = 1e-6;     % keep a tiny damping floor
 
 %% Nondimensionalization
-L_scale  = R;
 k1_scale = mean(param.k1_edge);
 k2_scale = mean(param.k2_edge);
 c0_scale = mean(param.c_edge);
