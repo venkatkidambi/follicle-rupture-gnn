@@ -14,7 +14,7 @@ rng(42);
 % Simulation resolution / scale
 N = 300;
 mVal = 1;                 % smaller mass reduces inertial coasting
-useExperimentalNodeData = true;
+useExperimentalNodeData = false;
 experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
 experimentalCoordinateScale = 1e-6;  % spreadsheet coordinates are in microns
 experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
@@ -283,7 +283,7 @@ if useExperimentalNodeData
 else
     param.anchor_on = true;
 end
-param.anchorPct = 10;          % anterior-most percentile of nodes
+param.anchorPct = 60;          % anterior-most percentile of nodes
 param.k_anchor = 10;        % weak positional tether stiffness
 param.c_anchor = 1;        % anchor damping
 
@@ -306,7 +306,7 @@ param.tau_dmg       = 0.005;   % [s] damage timescale (TUNE)
 param.dmg_pow       = 2;     % sharpness
 
 % Force the tiny tip to fail on a clock, independent of contractile pulling.
-param.instantDamage_on   = false;
+param.instantDamage_on   = true;
 param.instantDamageTime  = 0;
 param.instantDamageTau   = 1e-4;  % [s] smaller = closer to immediate cut
 
