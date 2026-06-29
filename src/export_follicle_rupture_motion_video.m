@@ -33,7 +33,7 @@ else
     D_time = [];
 end
 
-[motorEdge, ~, damageEdge, postNodeMask, tipNodeMask] = follicle_video_masks(nodeCoords, E, param);
+[bodyEdge, ~, damageEdge, postNodeMask, tipNodeMask] = follicle_video_masks(nodeCoords, E, param);
 
 i1 = E(:,1);
 i2 = E(:,2);
@@ -102,7 +102,7 @@ for k = 1:frameSkip:Nt
     damageFrac = nDamageBroken / max(nDamageEdges, 1);
 
     draw_video_edges(ax, Pc_um, E, true(Ne,1), opts.showBaseEdges, [0.82 0.82 0.82], 0.25);
-    draw_video_edges(ax, Pc_um, E, motorEdge, opts.showMotorEdges, [0.18 0.45 0.85], 0.65);
+    draw_video_edges(ax, Pc_um, E, bodyEdge, opts.showBodyEdges, [0.18 0.45 0.85], 0.65);
     draw_video_edges(ax, Pc_um, E, damageEdge, opts.showDamageEdges, [0.95 0.55 0.10], 1.15);
     draw_video_edges(ax, Pc_um, E, brokenEdge, opts.showBrokenEdges, [0.85 0.05 0.05], 2.2);
 
@@ -185,6 +185,7 @@ end
 
 
 function opts = video_defaults(opts)
+hasLegacyShowMotorEdges = isfield(opts, 'showMotorEdges') && ~isfield(opts, 'showBodyEdges');
 defaults = struct( ...
     'fps', 30, ...
     'quality', 95, ...
@@ -194,7 +195,7 @@ defaults = struct( ...
     'strainBreak', 0.25, ...
     'damageBreak', 0.99, ...
     'showBaseEdges', false, ...
-    'showMotorEdges', false, ...
+    'showBodyEdges', false, ...
     'showDamageEdges', false, ...
     'showBrokenEdges', false);
 
@@ -204,6 +205,10 @@ for i = 1:numel(names)
     if ~isfield(opts, name) || isempty(opts.(name))
         opts.(name) = defaults.(name);
     end
+end
+
+if hasLegacyShowMotorEdges
+    opts.showBodyEdges = opts.showMotorEdges;
 end
 end
 
@@ -233,7 +238,7 @@ zLimFix = [PallMin(3)-pad(3), PallMax(3)+pad(3)];
 end
 
 
-function [motorEdge, tipEdge, damageEdge, postNodeMask, tipNodeMask] = follicle_video_masks(nodeCoords, E, param)
+function [bodyEdge, tipEdge, damageEdge, postNodeMask, tipNodeMask] = follicle_video_masks(nodeCoords, E, param)
 edgeMid0 = 0.5 * (nodeCoords(E(:,1),:) + nodeCoords(E(:,2),:));
 
 if isfield(param,'postAxis')
@@ -254,10 +259,12 @@ sMid = postSign * edgeMid0(:,postAxis);
 sCutMain = prctile(sNodes, getParamOrDefault(param, 'mainPct', 80));
 sCutTip = prctile(sNodes, getParamOrDefault(param, 'tipPct', 92));
 
-if isfield(param,'motorMask')
-    motorEdge = logical(param.motorMask(:));
+if isfield(param,'bodyMask')
+    bodyEdge = logical(param.bodyMask(:));
+elseif isfield(param,'motorMask')
+    bodyEdge = logical(param.motorMask(:));
 else
-    motorEdge = sMid < sCutMain;
+    bodyEdge = sMid < sCutMain;
 end
 
 if isfield(param,'tipMask')
