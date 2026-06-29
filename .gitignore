@@ -5,6 +5,9 @@
 .DS_Store
 **/.DS_Store
 
+# Local Codex agent instructions.
+AGENTS.md
+
 # Generated simulation outputs are local-only.
 results/*
 !results/.gitkeep
