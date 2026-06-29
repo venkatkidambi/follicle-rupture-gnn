@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.0-bare-bones - 2026-06-29
+
+### Changed
+
+- Reworked the simulation into a bare-bones passive rupture baseline.
+- Kept the ellipsoidal epithelial shell, passive viscoelastic edge network,
+  localized rupture damage, edge weakening, and edge failure workflow.
+- Updated dashboard postprocessing to focus on rupture damage and shell motion
+  rather than actomyosin recruitment diagnostics.
+- Updated the motion-video exporter for the stripped simulation state.
+- Rewrote the README around the current baseline model, quick-start workflow,
+  rupture parameters, and future shortening-extension notes.
+
+### Removed
+
+- Removed active actomyosin force generation.
+- Removed active rest-length shortening.
+- Removed adaptive neighbor-based recruitment and shortening spread.
+- Removed the `A_edge` recruitment state from the ODE state.
+
+### Notes
+
+- This version is intentionally minimal: it provides a clean
+  rupture-and-weakening baseline that can be extended later with a new
+  shortening mechanism.
+
 ## v0.1.0-alpha - 2026-06-29
 
 ### Added
