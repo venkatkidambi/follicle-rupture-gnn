@@ -76,6 +76,11 @@ numerical singularities.
 Most settings live near the top of `src/follicle_rupture_msd_fixed.m`.
 
 ```matlab
+cellDiameter_um = 10;          % positive cell diameter in microns
+coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
+displayMode = 'microns';       % 'cells' or 'microns'
+generatedEllipsoidSemiAxes = [50 15 15];
+
 N = 300;                         % number of surface nodes
 tEnd = 1800;                     % simulated time, seconds
 numSave = 300;                   % number of saved frames
@@ -83,6 +88,72 @@ runPostprocess = true;           % make dashboard after simulation
 makeRuptureMotionVideo = true;   % export MP4 after simulation
 odeSolver = 'ode45';             % 'ode45', 'ode15s', or 'ode23t'
 ```
+
+### Cell-scale coordinate input
+
+`coordinateInputMode` controls how both `generatedEllipsoidSemiAxes` and the
+`x`, `y`, and `z` columns of an experimental spreadsheet are interpreted:
+
+- `'cells'`: one coordinate unit is one cell diameter
+- `'microns'`: one coordinate unit is 1 µm
+- `'meters'`: coordinates are already in meters
+
+Every coordinate array is converted to meters once, when it enters the
+simulation. The generated default `[50 15 15]` in `'cells'` mode with a
+10 µm cell diameter therefore produces the existing physical semi-axes of
+500 µm × 150 µm × 150 µm.
+
+For example, with 10 µm cells:
+
+```matlab
+cellDiameter_um = 10;
+coordinateInputMode = 'cells';
+generatedEllipsoidSemiAxes = [50 15 15]; % 500 x 150 x 150 µm
+```
+
+With 12 µm cells, 50 input cell diameters represent 600 µm:
+
+```matlab
+cellDiameter_um = 12;
+coordinateInputMode = 'cells';
+generatedEllipsoidSemiAxes = [50 15 15]; % 600 x 180 x 180 µm
+```
+
+To express the original 500 µm × 150 µm × 150 µm geometry directly in
+microns instead:
+
+```matlab
+coordinateInputMode = 'microns';
+generatedEllipsoidSemiAxes = [500 150 150];
+```
+
+`displayMode = 'cells'` plots position and displacement in cell diameters and
+velocity in cells/s. `displayMode = 'microns'` plots them in µm and µm/s.
+The selection affects only logging and plots, never the saved physical data.
+
+### Unit convention
+
+All mechanics use SI units. `nodeCoords`, displacement matrix `Y`, rest
+lengths `L0_edge0`, and time vector `tSol` are saved in meters or seconds as
+appropriate. Each MAT file stores the input, display, cell-diameter, and
+internal-unit metadata in `param.units`.
+
+| Parameter/data category | Internal and saved unit |
+| --- | --- |
+| Coordinates, positions, displacements, ellipsoid axes, edge/rest lengths, `zeta` | m |
+| Time, damage timescales, saved `tSol` | s |
+| Velocity | m/s |
+| Force, edge force state `sigma`, failure threshold, surface-penalty force | N |
+| Edge, anchor, and other linear stiffness | N/m |
+| Edge, surface-normal, drag, and anchor damping | N·s/m |
+| Node mass `mVal` | kg |
+| Strain, damage, masks, percentiles, nondimensional solver state | dimensionless |
+| Damage/priming rates | 1/s |
+
+> **Warning:** changing the coordinate input unit is only a coordinate
+> conversion. It is not valid to reinterpret lengths without also preserving
+> the SI meanings of stiffness, damping, force, and mass. These mechanical
+> parameters remain N/m, N·s/m, N, and kg and are never automatically rescaled.
 
 For a fast test run:
 
@@ -135,9 +206,27 @@ Expected spreadsheet layout:
 Cell ID, x, y, z
 ```
 
+The spreadsheet coordinate columns use the same `coordinateInputMode` and
+`cellDiameter_um` configuration as generated coordinates. For example, a
+spreadsheet value of `50` becomes 500 µm with 10 µm cells in `'cells'` mode,
+while a value of `500` becomes 500 µm in `'microns'` mode.
+
 The loader centers and orients coordinates, fits an ellipsoid for projection,
 and builds a local nearest-neighbor edge graph when `experimentalEdgeMode` is
 `'knn'`.
+
+## Unit Validation
+
+Run the lightweight conversion checks in MATLAB:
+
+```matlab
+addpath('src');
+run('tests/validate_unit_conversions.m');
+```
+
+The checks cover 10 µm and 12 µm cell diameters, equivalent micron/meter
+inputs, display conversion in both modes, invalid configurations, and the
+legacy MAT-file plotting fallback.
 
 ## Notes For Future Shortening Work
 

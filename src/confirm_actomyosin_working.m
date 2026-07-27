@@ -18,6 +18,9 @@ edgeList   = S.edgeList;
 tSol       = S.tSol(:);
 Y          = S.Y;
 param      = S.param;
+units      = follicle_unit_system(param);
+displayFromMeters = units.displayFromMeters;
+nodeCoordsDisplay = nodeCoords * displayFromMeters;
 
 N  = size(nodeCoords,1);
 Nt = numel(tSol);
@@ -112,28 +115,31 @@ ringColors = lines(nVelocityRings);
 subplot(2,3,1); hold on; grid on; box on;
 velLeg = cell(1, nVelocityRings);
 for r = 1:nVelocityRings
-    plot(tSol, ringVelocity(:,r)*1e6, 'LineWidth', 1.8, 'Color', ringColors(r,:));
+    plot(tSol, ringVelocity(:,r) * displayFromMeters, ...
+        'LineWidth', 1.8, 'Color', ringColors(r,:));
     velLeg{r} = sprintf('%s, n=%d', ringLabels{r}, ringCounts(r));
 end
 yline(0, ':');
 xlabel('Time (s)');
-ylabel('Anterior-axis velocity (\mum/s)');
+ylabel(sprintf('Anterior-axis velocity (%s)', units.displayVelocityUnit));
 title('Band velocity: anteriorward positive');
 legend(velLeg, 'Location','best');
 
 subplot(2,3,2); hold on; grid on; box on;
 otherNode = ringIdNode == 0;
-scatter3(nodeCoords(otherNode,1)*1e6, nodeCoords(otherNode,2)*1e6, nodeCoords(otherNode,3)*1e6, ...
+scatter3(nodeCoordsDisplay(otherNode,1), nodeCoordsDisplay(otherNode,2), nodeCoordsDisplay(otherNode,3), ...
     8, [0.78 0.78 0.78], 'filled');
 locLeg = {'outside bands'};
 for r = 1:nVelocityRings
     inRing = ringIdNode == r;
-    scatter3(nodeCoords(inRing,1)*1e6, nodeCoords(inRing,2)*1e6, nodeCoords(inRing,3)*1e6, ...
+    scatter3(nodeCoordsDisplay(inRing,1), nodeCoordsDisplay(inRing,2), nodeCoordsDisplay(inRing,3), ...
         16, ringColors(r,:), 'filled');
     locLeg{end+1} = ringLabels{r}; %#ok<AGROW>
 end
 axis equal; view(3);
-xlabel('x (\mum)'); ylabel('y (\mum)'); zlabel('z (\mum)');
+xlabel(sprintf('x (%s)', units.displayLengthUnit));
+ylabel(sprintf('y (%s)', units.displayLengthUnit));
+zlabel(sprintf('z (%s)', units.displayLengthUnit));
 title('Velocity bands');
 legend(locLeg, 'Location','bestoutside');
 
@@ -148,11 +154,12 @@ legend(ringLabels, 'Location','best');
 
 subplot(2,3,4); hold on; grid on; box on;
 for r = 1:nVelocityRings
-    plot(tSol, ringVelocityMag(:,r)*1e6, 'LineWidth', 1.8, 'Color', ringColors(r,:));
+    plot(tSol, ringVelocityMag(:,r) * displayFromMeters, ...
+        'LineWidth', 1.8, 'Color', ringColors(r,:));
 end
 yline(0, ':');
 xlabel('Time (s)');
-ylabel('Velocity magnitude (\mum/s)');
+ylabel(sprintf('Velocity magnitude (%s)', units.displayVelocityUnit));
 title('Band velocity magnitude');
 legend(velLeg, 'Location','best');
 
@@ -164,24 +171,26 @@ title('Selected rupture damage');
 ylim([0 1]);
 
 subplot(2,3,6); hold on; grid on; box on;
-scatter3(nodeCoords(:,1)*1e6, nodeCoords(:,2)*1e6, nodeCoords(:,3)*1e6, 8, 'filled');
+scatter3(nodeCoordsDisplay(:,1), nodeCoordsDisplay(:,2), nodeCoordsDisplay(:,3), 8, 'filled');
 rng(1);
 showK = min(3000, Ne);
 pick = randperm(Ne, showK);
 for kk = pick
     i = E(kk,1); j = E(kk,2);
-    Xi = nodeCoords(i,:); Xj = nodeCoords(j,:);
+    Xi = nodeCoordsDisplay(i,:); Xj = nodeCoordsDisplay(j,:);
     if bodyEdge(kk)
-        plot3([Xi(1) Xj(1)]*1e6, [Xi(2) Xj(2)]*1e6, [Xi(3) Xj(3)]*1e6, '-', ...
+        plot3([Xi(1) Xj(1)], [Xi(2) Xj(2)], [Xi(3) Xj(3)], '-', ...
             'Color', [0.2 0.45 0.85]);
     end
     if damageEdge(kk)
-        plot3([Xi(1) Xj(1)]*1e6, [Xi(2) Xj(2)]*1e6, [Xi(3) Xj(3)]*1e6, '-', ...
+        plot3([Xi(1) Xj(1)], [Xi(2) Xj(2)], [Xi(3) Xj(3)], '-', ...
             'Color', [0.85 0.05 0.05], 'LineWidth', 2);
     end
 end
 axis equal;
-xlabel('x (\mum)'); ylabel('y (\mum)'); zlabel('z (\mum)');
+xlabel(sprintf('x (%s)', units.displayLengthUnit));
+ylabel(sprintf('y (%s)', units.displayLengthUnit));
+zlabel(sprintf('z (%s)', units.displayLengthUnit));
 title('Body and damage edge masks');
 
 [matDir, matBase] = fileparts(matFile);

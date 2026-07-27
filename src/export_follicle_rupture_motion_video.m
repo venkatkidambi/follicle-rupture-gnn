@@ -22,6 +22,8 @@ edgeList = S.edgeList;
 tSol = S.tSol(:);
 Y = S.Y;
 param = S.param;
+units = follicle_unit_system(param);
+displayFromMeters = units.displayFromMeters;
 
 Nt = numel(tSol);
 E = edgeList;
@@ -45,7 +47,8 @@ else
 end
 L0 = max(L0, 1e-18);
 
-[xLimFix, yLimFix, zLimFix] = fixed_video_limits(nodeCoords, Y, Nt);
+[xLimFix, yLimFix, zLimFix] = fixed_video_limits( ...
+    nodeCoords, Y, Nt, displayFromMeters);
 
 fprintf('\n=== Exporting follicle rupture video: %s ===\n', outFile);
 
@@ -81,9 +84,9 @@ for k = 1:frameSkip:Nt
     U = reshape(Y(k,:),3,[]).';
     P = nodeCoords + U;
     C = median(P, 1, 'omitnan');
-    Pc_um = (P - C) * 1e6;
-    disp_um = sqrt(sum(U.^2, 2)) * 1e6;
-    disp_um_finite = disp_um(isfinite(disp_um));
+    PcDisplay = (P - C) * displayFromMeters;
+    dispDisplay = sqrt(sum(U.^2, 2)) * displayFromMeters;
+    dispDisplayFinite = dispDisplay(isfinite(dispDisplay));
 
     d = P(i2,:) - P(i1,:);
     L = sqrt(sum(d.^2, 2));
@@ -101,21 +104,21 @@ for k = 1:frameSkip:Nt
     nDamageBroken = nnz(damageBroken);
     damageFrac = nDamageBroken / max(nDamageEdges, 1);
 
-    draw_video_edges(ax, Pc_um, E, true(Ne,1), opts.showBaseEdges, [0.82 0.82 0.82], 0.25);
-    draw_video_edges(ax, Pc_um, E, bodyEdge, opts.showBodyEdges, [0.18 0.45 0.85], 0.65);
-    draw_video_edges(ax, Pc_um, E, damageEdge, opts.showDamageEdges, [0.95 0.55 0.10], 1.15);
-    draw_video_edges(ax, Pc_um, E, brokenEdge, opts.showBrokenEdges, [0.85 0.05 0.05], 2.2);
+    draw_video_edges(ax, PcDisplay, E, true(Ne,1), opts.showBaseEdges, [0.82 0.82 0.82], 0.25);
+    draw_video_edges(ax, PcDisplay, E, bodyEdge, opts.showBodyEdges, [0.18 0.45 0.85], 0.65);
+    draw_video_edges(ax, PcDisplay, E, damageEdge, opts.showDamageEdges, [0.95 0.55 0.10], 1.15);
+    draw_video_edges(ax, PcDisplay, E, brokenEdge, opts.showBrokenEdges, [0.85 0.05 0.05], 2.2);
 
     mainNodeMask = ~(postNodeMask | tipNodeMask);
     postOnlyNodeMask = postNodeMask & ~tipNodeMask;
 
-    scatter3(ax, Pc_um(mainNodeMask,1), Pc_um(mainNodeMask,2), Pc_um(mainNodeMask,3), ...
+    scatter3(ax, PcDisplay(mainNodeMask,1), PcDisplay(mainNodeMask,2), PcDisplay(mainNodeMask,3), ...
         14, [0.35 0.35 0.35], 'filled', 'MarkerEdgeColor','none');
 
-    scatter3(ax, Pc_um(postOnlyNodeMask,1), Pc_um(postOnlyNodeMask,2), Pc_um(postOnlyNodeMask,3), ...
+    scatter3(ax, PcDisplay(postOnlyNodeMask,1), PcDisplay(postOnlyNodeMask,2), PcDisplay(postOnlyNodeMask,3), ...
         18, [0.05 0.55 0.15], 'filled', 'MarkerEdgeColor','none');
 
-    scatter3(ax, Pc_um(tipNodeMask,1), Pc_um(tipNodeMask,2), Pc_um(tipNodeMask,3), ...
+    scatter3(ax, PcDisplay(tipNodeMask,1), PcDisplay(tipNodeMask,2), PcDisplay(tipNodeMask,3), ...
         24, [0.85 0.05 0.05], 'filled', 'MarkerEdgeColor','none');
 
     xlim(ax, xLimFix);
@@ -129,19 +132,19 @@ for k = 1:frameSkip:Nt
     xlabel(ax,''); ylabel(ax,''); zlabel(ax,'');
 
     [maxEps, p95Eps] = damage_strain_summary(epsEdge, damageEdge);
-    if isempty(disp_um_finite)
+    if isempty(dispDisplayFinite)
         medianDisp = NaN;
         maxDisp = NaN;
     else
-        medianDisp = median(disp_um_finite);
-        maxDisp = max(disp_um_finite);
+        medianDisp = median(dispDisplayFinite);
+        maxDisp = max(dispDisplayFinite);
     end
 
     titleText = sprintf(['Follicle rupture shell | t = %.2f s | ', ...
         'damage broken = %.2f (%d/%d) | max/p95 strain = %.3g / %.3g | ', ...
-        'median/max disp = %.2f / %.2f um'], ...
+        'median/max disp = %.2f / %.2f %s'], ...
         tSol(k), damageFrac, nDamageBroken, nDamageEdges, maxEps, p95Eps, ...
-        medianDisp, maxDisp);
+        medianDisp, maxDisp, units.displayLengthUnit);
 
     title(ax, titleText, ...
         'FontWeight','bold', 'FontSize', 10);
@@ -213,7 +216,7 @@ end
 end
 
 
-function [xLimFix, yLimFix, zLimFix] = fixed_video_limits(nodeCoords, Y, Nt)
+function [xLimFix, yLimFix, zLimFix] = fixed_video_limits(nodeCoords, Y, Nt, displayFromMeters)
 PallMin = [inf inf inf];
 PallMax = [-inf -inf -inf];
 
@@ -221,10 +224,10 @@ for k = 1:Nt
     U = reshape(Y(k,:),3,[]).';
     P = nodeCoords + U;
     C = median(P, 1, 'omitnan');
-    Pc_um = (P - C) * 1e6;
+    PcDisplay = (P - C) * displayFromMeters;
 
-    PallMin = min(PallMin, min(Pc_um, [], 1, 'omitnan'));
-    PallMax = max(PallMax, max(Pc_um, [], 1, 'omitnan'));
+    PallMin = min(PallMin, min(PcDisplay, [], 1, 'omitnan'));
+    PallMax = max(PallMax, max(PcDisplay, [], 1, 'omitnan'));
 end
 
 span = PallMax - PallMin;

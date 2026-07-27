@@ -10,12 +10,25 @@ clc; close all;
 rng(42);
 
 %% USER-PARAMETERS
+% Cell-scale coordinate and display configuration
+cellDiameter_um = 10;          % positive cell diameter in microns
+coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
+displayMode = 'microns';       % 'cells' or 'microns'
+
+% Generated ellipsoid semi-axes in coordinateInputMode units. Defaults are
+% 50 x 15 x 15 cell diameters = 500 x 150 x 150 microns for 10 um cells.
+generatedEllipsoidSemiAxes = [50 15 15];
+
+% All coordinate inputs are converted to meters once at geometry ingestion.
+% Mechanics and saved physical data remain SI: force N, stiffness N/m,
+% damping N*s/m, mass kg, time s; strain and damage are dimensionless.
+units = follicle_unit_system(cellDiameter_um, coordinateInputMode, displayMode);
+
 % Simulation resolution / scale
 N = 300;
-mVal = 1;                 % smaller mass reduces inertial coasting
+mVal = 1;                 % [kg] smaller mass reduces inertial coasting
 useExperimentalNodeData = false;
 experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
-experimentalCoordinateScale = 1e-6;  % spreadsheet coordinates are in microns
 experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
 experimentalOrientMode = 'principal-axes'; % 'principal-axes' aligns long axis to model x-axis
 experimentalLongAxisSign = -1;        % set 1 to flip experimental anterior/posterior ends
@@ -54,7 +67,7 @@ experimentalNodeDataFile = fullfile(inputNodeDataDir, experimentalNodeDataFileNa
 %% Nodes
 if useExperimentalNodeData
     [nodeCoords, experimentalCellIds] = loadExperimentalNodeCoords( ...
-        experimentalNodeDataFile, experimentalCoordinateScale, experimentalCenterMode);
+        experimentalNodeDataFile, units.coordinateToMeters, experimentalCenterMode);
     nodeCoords = orientExperimentalNodeCoords( ...
         nodeCoords, experimentalOrientMode, experimentalLongAxisSign);
     N = size(nodeCoords, 1);
@@ -62,7 +75,8 @@ if useExperimentalNodeData
     L_scale = median([a b c]);  % representative experimental radius scale
     geometryTitle = 'Experimental surface nodes';
 else
-    a = 500e-6; b = 150e-6; c = 150e-6;
+    ellipsoidSemiAxes_m = generatedEllipsoidSemiAxes * units.coordinateToMeters;
+    a = ellipsoidSemiAxes_m(1); b = ellipsoidSemiAxes_m(2); c = ellipsoidSemiAxes_m(3);
     L_scale = b;              % transverse follicle radius scale
     nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
     experimentalCellIds = [];
@@ -70,9 +84,11 @@ else
 end
 
 param.ell_a = a; param.ell_b = b; param.ell_c = c;
+param.units = units;
+param.generatedEllipsoidSemiAxes = generatedEllipsoidSemiAxes;
 param.useExperimentalNodeData = useExperimentalNodeData;
 param.experimentalNodeDataFile = experimentalNodeDataFile;
-param.experimentalCoordinateScale = experimentalCoordinateScale;
+param.experimentalCoordinateScale = units.coordinateToMeters;
 param.experimentalCenterMode = experimentalCenterMode;
 param.experimentalOrientMode = experimentalOrientMode;
 param.experimentalLongAxisSign = experimentalLongAxisSign;
@@ -111,8 +127,12 @@ end
 Ne = size(edgeList,1);
 
 if runPostprocess
-    figure; scatter3(nodeCoords(:,1),nodeCoords(:,2),nodeCoords(:,3),10,'filled');
+    nodeCoordsDisplay = nodeCoords * units.displayFromMeters;
+    figure; scatter3(nodeCoordsDisplay(:,1),nodeCoordsDisplay(:,2),nodeCoordsDisplay(:,3),10,'filled');
     axis equal; grid on; title(geometryTitle);
+    xlabel(sprintf('x (%s)', units.displayLengthUnit));
+    ylabel(sprintf('y (%s)', units.displayLengthUnit));
+    zlabel(sprintf('z (%s)', units.displayLengthUnit));
 end
 
 param.N = N;
@@ -130,9 +150,11 @@ param.edgeAccumJ = sparse(param.edge_j, (1:Ne)',  1, N, Ne);
 param.L0_edge0 = sqrt(sum((nodeCoords(E(:,2),:) - nodeCoords(E(:,1),:)).^2, 2));
 edgeNodeIncidence = sparse([param.edge_i; param.edge_j], [(1:Ne)'; (1:Ne)'], 1, N, Ne);
 nodeDegree = full(sum(edgeNodeIncidence, 2));
-fprintf('[MESH] nodes = %d | edges = %d | edge length median/p95/max = %.3g/%.3g/%.3g um | isolated nodes = %d\n', ...
-    N, Ne, median(param.L0_edge0) * 1e6, prctile(param.L0_edge0, 95) * 1e6, ...
-    max(param.L0_edge0) * 1e6, nnz(nodeDegree == 0));
+fprintf('[MESH] nodes = %d | edges = %d | edge length median/p95/max = %.3g/%.3g/%.3g %s | isolated nodes = %d\n', ...
+    N, Ne, median(param.L0_edge0) * units.displayFromMeters, ...
+    prctile(param.L0_edge0, 95) * units.displayFromMeters, ...
+    max(param.L0_edge0) * units.displayFromMeters, units.displayLengthUnit, ...
+    nnz(nodeDegree == 0));
 if any(nodeDegree == 0)
     warning('follicle_rupture:isolatedNodes', ...
         'Mesh contains %d isolated nodes that cannot move mechanically.', nnz(nodeDegree == 0));
@@ -301,12 +323,13 @@ end
 tSol  = tDimQ_all * tau_scale;
 Y_dim = XDimQ_all(:, 1:nPos);
 Y     = Y_dim * L_scale;
+L0_edge0 = param.L0_edge0;
 
 % extract edge state time courses
 D_time = XDimQ_all(:, iD1:iD2);
 
 save(simFile, ...
-     'nodeCoords','edgeList','tSol','Y','D_time','param','-v7.3');
+     'nodeCoords','edgeList','L0_edge0','tSol','Y','D_time','param','-v7.3');
 
 if makeRuptureMotionVideo
     try

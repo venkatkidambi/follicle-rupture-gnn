@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.1-bare-bones - 2026-07-27
+
+### Added
+
+- Added centralized cell-scale coordinate configuration with selectable
+  `cells`, `microns`, and `meters` input modes.
+- Added selectable `cells` or `microns` display units for mesh logging,
+  diagnostic plots, and motion videos.
+- Added complete SI and display metadata in `param.units`.
+- Added lightweight MATLAB unit-conversion validation.
+
+### Changed
+
+- Expressed the default generated ellipsoid as 50 × 15 × 15 cell-diameter
+  semi-axes while preserving its 500 µm × 150 µm × 150 µm physical geometry.
+- Converted generated and experimental coordinates to meters once at geometry
+  ingestion.
+- Saved `L0_edge0` as a top-level MAT variable in addition to its existing
+  location in `param`, with all physical coordinates, displacements, lengths,
+  and times remaining in SI units.
+- Centralized plotting conversions instead of repeating hard-coded micron
+  scale factors.
+- Documented coordinate inputs and the SI units required by every mechanical
+  parameter category.
+
+### Compatibility
+
+- Older MAT files without `param.units` continue to be interpreted internally
+  in meters and displayed in microns.
+
+### Validation
+
+- Verified 10 µm and 12 µm cell-diameter conversions, equivalent micron/meter
+  inputs, cell/micron display conversions, invalid configurations, and legacy
+  metadata fallback in MATLAB.
+
+### Known Concerns
+
+- The nondimensional acceleration wrapper may algebraically cancel `mVal`.
+  This release reports the concern but does not change the mechanics or
+  nondimensionalization equations.
+
 ## v0.2.0-bare-bones - 2026-06-29
 
 ### Changed
