@@ -12,7 +12,7 @@ rng(42);
 %% USER-PARAMETERS
 % Cell-scale coordinate and display configuration
 cellDiameter_um = 10;          % positive cell diameter in microns
-coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
+coordinateInputMode = 'microns'; % trackedNodes coordinates are treated as microns
 displayMode = 'microns';       % 'cells' or 'microns'
 
 % Generated ellipsoid semi-axes in coordinateInputMode units. Defaults are
@@ -22,17 +22,19 @@ generatedEllipsoidSemiAxes = [50 15 15];
 % All coordinate inputs are converted to meters once at geometry ingestion.
 % Mechanics and saved physical data remain SI: force N, stiffness N/m,
 % damping N*s/m, mass kg, time s; strain and damage are dimensionless.
-units = follicle_unit_system(cellDiameter_um, coordinateInputMode, displayMode);
+units = buildUnitSystem(cellDiameter_um, coordinateInputMode, displayMode);
 
 % Simulation resolution / scale
-N = 300;
+N = 300;                    % overridden by tracked node count below
 mVal = 1;                 % [kg] smaller mass reduces inertial coasting
-useExperimentalNodeData = false;
-experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
+useExperimentalNodeData = true;
+experimentalNodeDataFileName = fullfile('tracked_nodes', 'trackedNodes_nuc_48_2_OA7_1.mat');
+experimentalNodeDataVariable = 'trackedNodes';
+experimentalNodeDataFrame = 1; % use initial tracked coordinates only
 experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
 experimentalOrientMode = 'principal-axes'; % 'principal-axes' aligns long axis to model x-axis
 experimentalLongAxisSign = -1;        % set 1 to flip experimental anterior/posterior ends
-experimentalSurfaceConstraintMode = 'project-ellipsoid'; % project forces + damp normal velocity, but do not snap nodes
+experimentalSurfaceConstraintMode = 'reference-ellipsoid'; % preserve each measured node's initial shell level
 experimentalAnchorOn = false;          % measured node clouds should not have a frozen anterior shell
 experimentalEdgeMode = 'knn';          % 'knn' connects all measured nodes; 'hull' uses convex hull only
 experimentalNeighborCount = 6;         % local neighbors per measured node for 'knn' edge mode
@@ -44,12 +46,10 @@ cOuter_range = [1, 1];
 % Time integration and saved output
 tEnd  = 1800;                    % s
 numSave = 300;                 % saved output frames; solver still adapts internally
-runPostprocess = true;         % set true to generate diagnostic plots after saving
-makeRuptureMotionVideo = true;  % set true to export an MP4 after saving
+ruptureSaveEnd = 120;          % [s], densely sample the rupture transient
+ruptureSaveInterval = 0.25;    % [s], output spacing during the rupture window
 odeSolver = 'ode45';           % instant damage is stiff; ode15s handles it better
 progressEveryPhysSec = 5;      % console progress interval in physical seconds
-
-ruptureVideoName = 'follicleRupture_motion.mp4';
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 outputDir = fullfile(repoRoot, 'results');
@@ -61,33 +61,35 @@ if ~exist(inputNodeDataDir, 'dir')
     mkdir(inputNodeDataDir);
 end
 simFile = fullfile(outputDir, 'follicleShellSim_test2.mat');
-ruptureVideoFile = fullfile(outputDir, ruptureVideoName);
 experimentalNodeDataFile = fullfile(inputNodeDataDir, experimentalNodeDataFileName);
 
 %% Nodes
 if useExperimentalNodeData
     [nodeCoords, experimentalCellIds] = loadExperimentalNodeCoords( ...
-        experimentalNodeDataFile, units.coordinateToMeters, experimentalCenterMode);
+        experimentalNodeDataFile, units.coordinateToMeters, experimentalCenterMode, ...
+        experimentalNodeDataVariable, experimentalNodeDataFrame);
     nodeCoords = orientExperimentalNodeCoords( ...
         nodeCoords, experimentalOrientMode, experimentalLongAxisSign);
     N = size(nodeCoords, 1);
     [a, b, c] = fitAxisAlignedEllipsoidSemiAxes(nodeCoords);
     L_scale = median([a b c]);  % representative experimental radius scale
-    geometryTitle = 'Experimental surface nodes';
 else
     ellipsoidSemiAxes_m = generatedEllipsoidSemiAxes * units.coordinateToMeters;
     a = ellipsoidSemiAxes_m(1); b = ellipsoidSemiAxes_m(2); c = ellipsoidSemiAxes_m(3);
     L_scale = b;              % transverse follicle radius scale
     nodeCoords = genEllipsoidSurfaceNodes(N, a, b, c, [0 0 0]);
     experimentalCellIds = [];
-    geometryTitle = 'Ellipsoid surface nodes';
 end
 
 param.ell_a = a; param.ell_b = b; param.ell_c = c;
+param.surfaceLevel0 = (nodeCoords(:,1)./a).^2 + ...
+    (nodeCoords(:,2)./b).^2 + (nodeCoords(:,3)./c).^2;
 param.units = units;
 param.generatedEllipsoidSemiAxes = generatedEllipsoidSemiAxes;
 param.useExperimentalNodeData = useExperimentalNodeData;
 param.experimentalNodeDataFile = experimentalNodeDataFile;
+param.experimentalNodeDataVariable = experimentalNodeDataVariable;
+param.experimentalNodeDataFrame = experimentalNodeDataFrame;
 param.experimentalCoordinateScale = units.coordinateToMeters;
 param.experimentalCenterMode = experimentalCenterMode;
 param.experimentalOrientMode = experimentalOrientMode;
@@ -100,12 +102,12 @@ param.experimentalCellIds = experimentalCellIds;
 
 % Posterior axis convention
 param.postAxis = 1;
-param.postSign = -1;
+param.postSign = 1; % tracked-node rupture/0-10% bands use the opposite physical tip
 
 % Surface penalty + normal damping
 param.k_surf = 5e-6;     % [N] penalty strength
-param.c_surf = 5e-2;     % [N*s/m] normal damping
-param.c_drag = 1e-4;     % [N*s/m] whole-node damping; higher = less post-cut coasting
+param.c_surf = 1;        % [N*s/m] suppress motion away from the local shell tangent
+param.c_drag = 0.1;        % [N*s/m] overdamped tissue drag prevents post-cut coasting
 if useExperimentalNodeData
     param.surfaceConstraintMode = experimentalSurfaceConstraintMode;
     param.projectEdgeForcesToSurface = true;
@@ -125,15 +127,6 @@ else
     edgeList = unique(allEdges,'rows');
 end
 Ne = size(edgeList,1);
-
-if runPostprocess
-    nodeCoordsDisplay = nodeCoords * units.displayFromMeters;
-    figure; scatter3(nodeCoordsDisplay(:,1),nodeCoordsDisplay(:,2),nodeCoordsDisplay(:,3),10,'filled');
-    axis equal; grid on; title(geometryTitle);
-    xlabel(sprintf('x (%s)', units.displayLengthUnit));
-    ylabel(sprintf('y (%s)', units.displayLengthUnit));
-    zlabel(sprintf('z (%s)', units.displayLengthUnit));
-end
 
 param.N = N;
 param.nodeCoords = nodeCoords;
@@ -168,7 +161,7 @@ param.c_series_edge = cOuter_range(2) * ones(Ne,1);
 % Passive 1D connection model between cells.
 % Options: 'spring', 'damper', 'maxwell', 'kelvin-voigt', 'zener', 'burgers'.
 % You may also set param.connectionModel_edge to a per-edge cell/string array.
-param.connectionModel = 'burgers';
+param.connectionModel = 'maxwell';
 param.connectionModelKey = normalizeConnectionModel(param.connectionModel);
 param.connectionModelId_edge = connectionModelIds(param, Ne);
 
@@ -191,8 +184,31 @@ param.bodyMask = double(sMid < sCutMain);     % main-body edges
 param.tipMask  = double(sMid >= sCutTip);     % tiny posterior cap edges
 
 %% Damage region selection
-param.damageMode = 'tipmost-edge';     % 'seam', 'tip', or 'tipmost-edge'
+param.damageMode = 'principal-0-10-tip-patch';
+param.tipPatchEdgeCount = 8; % compact weak patch; increase for a larger opening
 param.seamWidthFrac = 0.04;   % fraction of posterior-score range
+
+% Compute the same initial long-axis coordinate used by the post-processing
+% plot. Orient its sign by the existing posterior convention so percentile
+% membership is deterministic rather than depending on EIG's arbitrary sign.
+centeredNodes = nodeCoords - mean(nodeCoords, 1);
+principalCovariance = (centeredNodes.' * centeredNodes) / max(N - 1, 1);
+[principalVectors, principalValues] = eig(principalCovariance, 'vector');
+[~, principalOrder] = sort(principalValues, 'descend');
+principalLongAxis = principalVectors(:, principalOrder(1));
+posteriorDirection = zeros(3,1);
+posteriorDirection(param.postAxis) = param.postSign;
+if dot(principalLongAxis, posteriorDirection) < 0
+    principalLongAxis = -principalLongAxis;
+end
+principalNodeScore = centeredNodes * principalLongAxis;
+principalEdgeScore = mean(principalNodeScore(E), 2);
+principalTipCutoff = prctile(principalNodeScore, 10);
+
+param.principalLongAxis0 = principalLongAxis;
+param.principalNodeScore0 = principalNodeScore;
+param.principalTipPercentile = 10;
+param.principalTipCutoff = principalTipCutoff;
 
 switch lower(param.damageMode)
     case 'seam'
@@ -205,26 +221,110 @@ switch lower(param.damageMode)
         [~, tipmostEdgeIdx] = max(sMid);
         param.damageMask(tipmostEdgeIdx) = 1;
         param.tipmostDamageEdge = tipmostEdgeIdx;
+    case 'principal-0-10-tip-edge'
+        % Restrict candidates to edges fully contained in the plotted 0-10%
+        % node band, then choose the one nearest its extreme tip. This keeps
+        % rupture selection and visualization in the same coordinate system.
+        principalTipCandidates = find( ...
+            principalNodeScore(E(:,1)) <= principalTipCutoff & ...
+            principalNodeScore(E(:,2)) <= principalTipCutoff);
+        if isempty(principalTipCandidates)
+            error('No mesh edge has both endpoints in the principal-axis 0-10%% tip band.');
+        end
+        [~, localTipIdx] = min(principalEdgeScore(principalTipCandidates));
+        principalTipEdgeIdx = principalTipCandidates(localTipIdx);
+        param.damageMask = zeros(Ne,1);
+        param.damageMask(principalTipEdgeIdx) = 1;
+        param.principalTipDamageEdge = principalTipEdgeIdx;
+        param.principalTipCandidateEdges = principalTipCandidates;
+    case 'principal-0-10-tip-patch'
+        % Select a compact group of edges nearest the extreme of the same
+        % 0-10% principal-axis band shown in post-processing. Each edge must
+        % still reach its own mechanical failure threshold; this defines a
+        % weak tissue patch, not a prescribed cut time.
+        principalTipCandidates = find( ...
+            principalNodeScore(E(:,1)) <= principalTipCutoff & ...
+            principalNodeScore(E(:,2)) <= principalTipCutoff);
+        if isempty(principalTipCandidates)
+            error('No mesh edge has both endpoints in the principal-axis 0-10%% tip band.');
+        end
+        [~, patchOrder] = sort(principalEdgeScore(principalTipCandidates), 'ascend');
+        patchCount = min(param.tipPatchEdgeCount, numel(principalTipCandidates));
+        principalTipPatchEdges = principalTipCandidates(patchOrder(1:patchCount));
+        param.damageMask = zeros(Ne,1);
+        param.damageMask(principalTipPatchEdges) = 1;
+        param.principalTipPatchEdges = principalTipPatchEdges;
+        param.principalTipCandidateEdges = principalTipCandidates;
     otherwise
-        error('Unknown damageMode "%s". Use "seam", "tip", or "tipmost-edge".', param.damageMode);
+        error(['Unknown damageMode "%s". Use "seam", "tip", ', ...
+               '"tipmost-edge", "principal-0-10-tip-edge", or ', ...
+               '"principal-0-10-tip-patch".'], param.damageMode);
 end
 
 fprintf('[MASK] body edges = %d/%d | tip edges = %d | damage edges = %d\n', ...
     nnz(param.bodyMask), Ne, nnz(param.tipMask), nnz(param.damageMask));
 if nnz(param.damageMask) == 0
-    error('Tiny tip selection produced zero damage edges. Lower param.tipPct slightly.');
+    error('Rupture-region selection produced zero damage edges.');
+end
+selectedDamageEdge = find(param.damageMask > 0);
+rupturePatchNodes = unique(E(selectedDamageEdge,:));
+param.rupturePatchNodes = rupturePatchNodes;
+if isscalar(selectedDamageEdge)
+    selectedEndpointPercentiles = 100 * [ ...
+        mean(principalNodeScore <= principalNodeScore(E(selectedDamageEdge,1))), ...
+        mean(principalNodeScore <= principalNodeScore(E(selectedDamageEdge,2)))];
+    fprintf('[RUPTURE LOCATION] edge = %d | principal-axis endpoint percentiles = %.3g, %.3g\n', ...
+        selectedDamageEdge, selectedEndpointPercentiles(1), selectedEndpointPercentiles(2));
+else
+    patchPercentiles = 100 * arrayfun(@(nodeIdx) ...
+        mean(principalNodeScore <= principalNodeScore(nodeIdx)), rupturePatchNodes);
+    fprintf('[RUPTURE LOCATION] patch edges = %s | nodes = %d | percentile span = %.3g-%.3g\n', ...
+        mat2str(selectedDamageEdge.'), numel(rupturePatchNodes), ...
+        min(patchPercentiles), max(patchPercentiles));
 end
 
-%% Active mechanics placeholder
-% Edges keep their original geometric rest lengths until damage weakens or
-% fails them. There is no active contraction state in this baseline model.
+%% Localized rim retraction
+% Contract the intact shoulder edges that join the rupture-patch nodes to
+% the surrounding shell. Contracting the rupture edges themselves collapses
+% their endpoints into a cluster before failure. The shoulder arrangement
+% instead loads the weak patch in tension and, after failure, keeps drawing
+% its rim nodes back along the shell surface.
+isPatchNodeI = ismember(E(:,1), rupturePatchNodes);
+isPatchNodeJ = ismember(E(:,2), rupturePatchNodes);
+% The patch is at the minimum principal score. Keep only links whose
+% non-patch endpoint has the larger score, i.e. links directed back toward
+% the follicle body instead of farther toward the extreme tip.
+bodyFacingFromI = isPatchNodeI & ~isPatchNodeJ & ...
+    principalNodeScore(E(:,2)) > principalNodeScore(E(:,1));
+bodyFacingFromJ = isPatchNodeJ & ~isPatchNodeI & ...
+    principalNodeScore(E(:,1)) > principalNodeScore(E(:,2));
+param.retractionMask = double((bodyFacingFromI | bodyFacingFromJ) & param.damageMask == 0);
+if ~any(param.retractionMask)
+    error('Rupture patch has no intact shoulder edges available for retraction.');
+end
+
+param.contractionStartTime = 3;       % [s]
+param.contractionRateFrac_edge = zeros(Ne,1);
+param.contractionRateFrac_edge(param.retractionMask > 0) = 0.20; % [L0/s]
+param.minRestLengthFrac_edge = ones(Ne,1);
+param.minRestLengthFrac_edge(param.retractionMask > 0) = 0.30;
+
+% The patch edges are weak and fail when stretched by the retracting rim;
+% the shoulder edges remain intact so they continue pulling the rim back.
+param.extensionCritFrac_edge = inf(Ne,1);
+param.extensionCritFrac_edge(param.damageMask > 0) = 0.15;
+
+if any(param.contractionRateFrac_edge < 0) || ...
+        any(param.minRestLengthFrac_edge <= 0 | param.minRestLengthFrac_edge > 1)
+    error('Contraction rates must be nonnegative and rest-length floors must lie in (0,1].');
+end
 
 % Optional weak anterior anchoring. This is a soft positional boundary
 % condition to stabilize directional epithelial retraction, not a rigid pin.
 if useExperimentalNodeData
     param.anchor_on = experimentalAnchorOn;
 else
-    param.anchor_on = true;
+    param.anchor_on = false; % temporarily disabled to allow post-rupture recoil
 end
 param.anchorPct = 60;          % anterior-most percentile of nodes
 param.k_anchor = 10;        % weak positional tether stiffness
@@ -232,30 +332,19 @@ param.c_anchor = 1;        % anchor damping
 
 sCutAnchor = prctile(sNodes, param.anchorPct);
 param.anchorNodeMask = double(sNodes <= sCutAnchor);
-fprintf('[ANCHOR] anchor nodes = %d/%d\n', nnz(param.anchorNodeMask), N);
+fprintf('[ANCHOR] enabled = %d | eligible anchor nodes = %d/%d\n', ...
+    param.anchor_on, nnz(param.anchorNodeMask), N);
 
-fprintf('[ACTIVE MECHANICS] disabled; rest lengths remain fixed at their geometric baseline\n');
+retractingEdges = find(param.retractionMask > 0);
+fprintf('[RETRACTION] shoulder edges = %s | start = %.3g s | rate = %.3g L0/s | floor = %.3g L0\n', ...
+    mat2str(retractingEdges.'), param.contractionStartTime, ...
+    param.contractionRateFrac_edge(retractingEdges(1)), ...
+    param.minRestLengthFrac_edge(retractingEdges(1)));
+fprintf('[RUPTURE] weak patch edges = %s | break = %.3g L0 extension\n', ...
+    mat2str(selectedDamageEdge.'), param.extensionCritFrac_edge(selectedDamageEdge(1)));
 
 %% Damage / rupture parameters
-param.tipDamage_on  = true;  % off because the tiny tip now ruptures autonomously
-
-param.sig_fail_tip  = 1e-9; % [N] tip failure threshold (TUNE)
-param.tau_dmg       = 0.005;   % [s] damage timescale (TUNE)
-param.dmg_pow       = 2;     % sharpness
-
-% Force the tiny tip to fail on a clock, independent of contractile pulling.
-param.instantDamage_on   = true;
-param.instantDamageTime  = 0;
-param.instantDamageTau   = 1e-4;  % [s] smaller = closer to immediate cut
-
-param.eps_gate_on   = true;  % only damage if opening
-param.eps_gate      = 0.001;
-
-% Optional: gentle tip priming (adds small damage even before overload)
-param.tipPriming_on   = false; % off because instantDamage_on handles autonomous rupture
-param.tipPrimingRate  = 0.05;  % [1/s]
-param.tipPriming_on_t = 0.5;   % [s]
-param.tipPriming_tau  = 0.3;   % [s]
+param.ruptureDamageTau = 0.005; % [s], rapid continuous approximation to a break
 
 % Minimum load-bearing fraction to avoid numerical singularities
 param.g_floor_stiff = 0;        % allow fully failed
@@ -274,7 +363,8 @@ param.scale.k2      = k2_scale;
 param.scale.tau     = tau_scale;
 param.scale.epsilon = epsilon;
 param.numSave = numSave;
-param.runPostprocess = runPostprocess;
+param.ruptureSaveEnd = ruptureSaveEnd;
+param.ruptureSaveInterval = ruptureSaveInterval;
 param.odeSolver = odeSolver;
 param.progressEveryPhysSec = progressEveryPhysSec;
 
@@ -299,14 +389,22 @@ assert(isscalar(tFinal_dim) && isfinite(tFinal_dim));
 X0_dim = zeros(nX,1);
 
 opts = odeset( ...
-    'RelTol', 1e-2, ...
-    'AbsTol', 1e-4, ...
+    'RelTol', 1e-5, ...
+    'AbsTol', 1e-8, ...
     'MaxStep', 5, ...
     'InitialStep', 1e-3, ...
     'OutputFcn', @(t_dim, y, flag) myProgressOutputFcn(t_dim, y, flag, tau_scale, tFinal_dim, param.progressEveryPhysSec), ...
     'Stats', 'on');
 
-tDimQ_all = linspace(0, tFinal_dim, numSave);
+ruptureSaveEnd = min(max(param.ruptureSaveEnd, 0), tEnd);
+if ~(isscalar(param.ruptureSaveInterval) && isfinite(param.ruptureSaveInterval) && ...
+        param.ruptureSaveInterval > 0)
+    error('ruptureSaveInterval must be a positive finite scalar.');
+end
+tPhysQ_early = (0:param.ruptureSaveInterval:ruptureSaveEnd).';
+tPhysQ_late = linspace(ruptureSaveEnd, tEnd, numSave).';
+tPhysQ_all = unique([tPhysQ_early; tPhysQ_late]);
+tDimQ_all = tPhysQ_all / tau_scale;
 
 odeRHS = @(t,X) nondimRHS_shell(t, X, param);
 switch lower(param.odeSolver)
@@ -323,31 +421,22 @@ end
 tSol  = tDimQ_all * tau_scale;
 Y_dim = XDimQ_all(:, 1:nPos);
 Y     = Y_dim * L_scale;
+V_dim = XDimQ_all(:, nPos+1:nPos+nVel);
+V     = V_dim * (L_scale/tau_scale);
 L0_edge0 = param.L0_edge0;
 
 % extract edge state time courses
-D_time = XDimQ_all(:, iD1:iD2);
+D_time = min(max(XDimQ_all(:, iD1:iD2), 0), 1);
+
+% Save the imposed natural-length history alongside displacement/damage so
+% rupture can be checked directly in post-processing.
+Lnatural_time = zeros(numel(tSol), Ne);
+for it = 1:numel(tSol)
+    Lnatural_time(it,:) = contractingNaturalLengths(tSol(it), param).';
+end
 
 save(simFile, ...
-     'nodeCoords','edgeList','L0_edge0','tSol','Y','D_time','param','-v7.3');
-
-if makeRuptureMotionVideo
-    try
-        export_follicle_rupture_motion_video(simFile, ruptureVideoFile);
-    catch ME
-        warning('follicle_rupture:videoExportFailed', ...
-            'Video export failed (%s): %s', ME.identifier, ME.message);
-    end
-end
-
-if param.runPostprocess
-    try
-        confirm_actomyosin_working(simFile);
-    catch ME
-        warning('follicle_rupture:postprocessFailed', ...
-            'Postprocessing failed (%s): %s', ME.identifier, ME.message);
-    end
-end
+     'nodeCoords','edgeList','L0_edge0','Lnatural_time','tSol','Y','V','D_time','param','-v7.3');
 
 end % main
 
@@ -431,11 +520,13 @@ surfaceConstraintMode = 'ellipsoid';
 if isfield(param,'surfaceConstraintMode') && ~isempty(param.surfaceConstraintMode)
     surfaceConstraintMode = lower(strtrim(char(param.surfaceConstraintMode)));
 end
-if ~ismember(surfaceConstraintMode, {'ellipsoid', 'project-ellipsoid', 'none', 'off'})
-    error('Unknown surfaceConstraintMode "%s". Use "ellipsoid", "project-ellipsoid", or "none".', surfaceConstraintMode);
+if ~ismember(surfaceConstraintMode, {'ellipsoid', 'reference-ellipsoid', 'project-ellipsoid', 'none', 'off'})
+    error(['Unknown surfaceConstraintMode "%s". Use "ellipsoid", ', ...
+        '"reference-ellipsoid", "project-ellipsoid", or "none".'], surfaceConstraintMode);
 end
-useEllipsoidNormals = any(strcmp(surfaceConstraintMode, {'ellipsoid', 'project-ellipsoid'}));
-useEllipsoidPenalty = strcmp(surfaceConstraintMode, 'ellipsoid');
+useEllipsoidNormals = any(strcmp(surfaceConstraintMode, ...
+    {'ellipsoid', 'reference-ellipsoid', 'project-ellipsoid'}));
+useEllipsoidPenalty = any(strcmp(surfaceConstraintMode, {'ellipsoid', 'reference-ellipsoid'}));
 useEllipsoidNormalDamping = useEllipsoidNormals;
 
 % Ellipsoid signed error and outward normals at current node positions.
@@ -444,6 +535,9 @@ if useEllipsoidNormals
     a = param.ell_a; b = param.ell_b; c = param.ell_c;
     xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
     fSurf = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
+    if strcmp(surfaceConstraintMode, 'reference-ellipsoid')
+        fSurf = fSurf - (param.surfaceLevel0 - 1);
+    end
     nxv = 2*xx/(a^2);
     nyv = 2*yy/(b^2);
     nzv = 2*zz/(c^2);
@@ -454,18 +548,18 @@ else
     nSurf = zeros(N,3);
 end
 
-% Edge kinematics with fixed geometric rest lengths.
+% Edge kinematics relative to the imposed time-dependent natural lengths.
 rij = pos(jEdge,:) - pos(iEdge,:);
 L = sqrt(sum(rij.^2, 2));
 Lsafe = max(L, 1e-18);
 n_hat = rij ./ Lsafe;
 n_hat(L < 1e-18,:) = 0;
 
+[Lnatural, LnaturalDot] = contractingNaturalLengths(t, param);
 L0_ref = max(param.L0_edge0(:), 1e-18);
 geometricStretchDot = sum((vMat(jEdge,:) - vMat(iEdge,:)) .* n_hat, 2);
-stretch = L - L0_ref;
-stretch_dot = geometricStretchDot;
-eps_e = stretch ./ L0_ref;
+stretch = L - Lnatural;
+stretch_dot = geometricStretchDot - LnaturalDot;
 
 % Passive connection element forces
 g  = max(1 - D, param.g_floor_stiff);
@@ -479,7 +573,9 @@ cM = max(gd .* param.c_edge(:), 1e-12);
 [sig_passive, dsigma, dzeta] = connectionElement1DVectorized( ...
     param.connectionModelId_edge, stretch, stretch_dot, sigma, zeta, k1, k2, cM, cS);
 
-sig_total = sig_passive;
+% Ensure a fully damaged history-dependent edge carries no residual stored
+% stress (Maxwell/Burgers sigma otherwise remains a state after failure).
+sig_total = (1 - D) .* sig_passive;
 
 Fedge = sig_total .* n_hat;
 Fi = Fedge;
@@ -499,45 +595,13 @@ end
 
 dD = zeros(Ne,1);
 
-% ---- Optional instantaneous cut of the damage ring ----
-if isfield(param,'instantDamage_on') && param.instantDamage_on && ...
-        isfield(param,'damageMask') && any(param.damageMask > 0)
-    if t >= param.instantDamageTime
-        damageEdges = (param.damageMask(:) > 0);
-        tauInstant = max(param.instantDamageTau, 1e-8);
-        dD(damageEdges) = dD(damageEdges) + (1 - D(damageEdges)) ./ tauInstant;
-    end
-end
-
-% ---- Localized damage from total tension (tension-only) ----
-if isfield(param,'tipDamage_on') && param.tipDamage_on && isfield(param,'damageMask')
-    if isfield(param,'eps_gate_on') && param.eps_gate_on
-        gateOpen = (eps_e > param.eps_gate);
-    else
-        gateOpen = true(Ne,1);
-    end
-
-    eligible = (param.damageMask(:) > 0) & gateOpen;
-    if any(eligible)
-        sig_fail = param.sig_fail_tip;
-        sig_tens = max(sig_total, 0);
-        over = max(sig_tens - sig_fail, 0) ./ max(sig_fail, 1e-18);
-        activeDamage = eligible & (over > 0);
-
-        if any(activeDamage)
-            pwr = max(param.dmg_pow, 1);
-            tau = max(param.tau_dmg, 1e-6);
-            dD(activeDamage) = dD(activeDamage) + ...
-                (over(activeDamage).^pwr) .* (1 - D(activeDamage)) ./ tau;
-        end
-    end
-end
-
-% ---- Optional tip priming (gentle background weakening) ----
-if isfield(param,'tipPriming_on') && param.tipPriming_on && isfield(param,'damageMask') && any(param.damageMask>0)
-    A = 1 ./ (1 + exp(-(t - param.tipPriming_on_t)/max(param.tipPriming_tau,eps)));
-    damageEdges = (param.damageMask > 0);
-    dD(damageEdges) = dD(damageEdges) + (A * param.tipPrimingRate) .* (1 - D(damageEdges));
+% ---- Weakest-edge rupture from critical extension ----
+% This is the direct 3D counterpart of ext >= delt_crit in the chain model.
+criticalExtension = param.extensionCritFrac_edge(:) .* L0_ref;
+breaking = (param.damageMask(:) > 0) & (stretch >= criticalExtension);
+if any(breaking)
+    tauBreak = max(param.ruptureDamageTau, 1e-8);
+    dD(breaking) = (1 - D(breaking)) ./ tauBreak;
 end
 
 %% ===== Optional surface constraint: ellipsoid manifold via penalty + damping =====
@@ -617,6 +681,23 @@ if any(isBurgers)
         (k2(isBurgers) ./ cM(isBurgers)) .* sig(isBurgers);
     sig_passive(isBurgers) = sig(isBurgers);
 end
+end
+
+
+function [Lnatural, LnaturalDot] = contractingNaturalLengths(t, param)
+% Prescribed natural-length contraction, equivalent to
+% Ln=max(L0-rate*(t-tStart), Lmin) in the 1D reference model.
+L0 = param.L0_edge0(:);
+rateFrac = param.contractionRateFrac_edge(:);
+floorFrac = param.minRestLengthFrac_edge(:);
+elapsed = max(t - param.contractionStartTime, 0);
+unclampedFrac = 1 - rateFrac .* elapsed;
+lengthFrac = max(unclampedFrac, floorFrac);
+Lnatural = L0 .* lengthFrac;
+
+isShortening = (t >= param.contractionStartTime) & ...
+    (rateFrac > 0) & (unclampedFrac > floorFrac);
+LnaturalDot = -L0 .* rateFrac .* isShortening;
 end
 
 
@@ -770,25 +851,56 @@ dist2 = max(dist2, 0);
 end
 
 
-function [nodeCoords, cellIds] = loadExperimentalNodeCoords(xlsxFile, coordinateScale, centerMode)
+function [nodeCoords, cellIds] = loadExperimentalNodeCoords(dataFile, coordinateScale, centerMode, variableName, frameIndex)
 if nargin < 2 || isempty(coordinateScale)
     coordinateScale = 1;
 end
 if nargin < 3 || isempty(centerMode)
     centerMode = 'median';
 end
-if ~isfile(xlsxFile)
-    error('Experimental node data file not found: %s', xlsxFile);
+if nargin < 4 || isempty(variableName)
+    variableName = 'trackedNodes';
+end
+if nargin < 5 || isempty(frameIndex)
+    frameIndex = 1;
+end
+if ~isfile(dataFile)
+    error('Experimental node data file not found: %s', dataFile);
 end
 
-raw = readmatrix(xlsxFile);
-if size(raw, 2) < 4
-    error('Experimental node data must contain Cell ID, x, y, z in the first four columns.');
+[~, ~, extension] = fileparts(dataFile);
+switch lower(extension)
+    case '.mat'
+        fileData = load(dataFile, variableName);
+        if ~isfield(fileData, variableName)
+            error('MAT-file %s does not contain variable "%s".', dataFile, variableName);
+        end
+        tracked = fileData.(variableName);
+        if ~isnumeric(tracked) || ndims(tracked) > 3 || ...
+                size(tracked,2) ~= 3 || size(tracked,3) < frameIndex || frameIndex < 1
+            error(['Variable "%s" must be numeric [N x 3 x T], and frameIndex ', ...
+                   'must identify an available frame.'], variableName);
+        end
+        nodeCoords = double(tracked(:,:,frameIndex)) * coordinateScale;
+        cellIds = (1:size(nodeCoords,1)).';
+        placeholderRows = all(nodeCoords == 0, 2);
+        if any(placeholderRows)
+            fprintf('[GEOMETRY] omitted %d zero-placeholder tracks absent from frame %d\n', ...
+                nnz(placeholderRows), frameIndex);
+        end
+        fprintf('[GEOMETRY] using frame %d only from %s (%s)\n', ...
+            frameIndex, dataFile, variableName);
+    otherwise
+        raw = readmatrix(dataFile);
+        if size(raw, 2) < 4
+            error('Experimental node data must contain Cell ID, x, y, z in the first four columns.');
+        end
+        cellIds = raw(:,1);
+        nodeCoords = raw(:,2:4) * coordinateScale;
+        placeholderRows = false(size(nodeCoords,1),1);
 end
 
-cellIds = raw(:,1);
-nodeCoords = raw(:,2:4) * coordinateScale;
-validRows = all(isfinite(nodeCoords), 2);
+validRows = all(isfinite(nodeCoords), 2) & ~placeholderRows;
 cellIds = cellIds(validRows);
 nodeCoords = nodeCoords(validRows, :);
 [nodeCoords, uniqueIdx] = unique(nodeCoords, 'rows', 'stable');
@@ -814,7 +926,7 @@ switch centerModeKey
         error('Unknown experimentalCenterMode "%s". Use "median", "mean", or "none".', centerMode);
 end
 
-fprintf('[GEOMETRY] loaded %d experimental nodes from %s\n', size(nodeCoords,1), xlsxFile);
+fprintf('[GEOMETRY] loaded %d experimental nodes from %s\n', size(nodeCoords,1), dataFile);
 end
 
 
@@ -857,8 +969,7 @@ switch orientModeKey
         nodeCoords = nodeCoords * principalAxes;
         nodeCoords(:,1) = longAxisSign * nodeCoords(:,1);
 
-        fprintf(['[GEOMETRY] oriented experimental nodes with principal axes ', ...
-                 '(long axis -> x, posterior model end is -x)\n']);
+        fprintf('[GEOMETRY] oriented experimental nodes with principal axes (long axis -> x)\n');
     otherwise
         error('Unknown experimentalOrientMode "%s". Use "principal-axes" or "none".', orientMode);
 end
@@ -944,5 +1055,73 @@ switch flag
         totalWall = toc(startWall);
         fprintf('==> ODE done. Elapsed wall time: %.2f s\n', totalWall);
         clear startWall nextPhysTick
+end
+end
+
+
+function units = buildUnitSystem(cellDiameter_um, coordinateInputMode, displayMode)
+if ~(isnumeric(cellDiameter_um) && isreal(cellDiameter_um) && ...
+        isscalar(cellDiameter_um) && isfinite(cellDiameter_um) && cellDiameter_um > 0)
+    error('follicle_rupture:invalidCellDiameter', ...
+        'cellDiameter_um must be a positive, finite numeric scalar.');
+end
+
+coordinateInputMode = normalizeUnitMode(coordinateInputMode, ...
+    {'cells', 'microns', 'meters'}, 'coordinate input');
+displayMode = normalizeUnitMode(displayMode, ...
+    {'cells', 'microns'}, 'display');
+
+cellDiameter_m = cellDiameter_um * 1e-6;
+switch coordinateInputMode
+    case 'cells'
+        coordinateToMeters = cellDiameter_m;
+    case 'microns'
+        coordinateToMeters = 1e-6;
+    case 'meters'
+        coordinateToMeters = 1;
+end
+
+switch displayMode
+    case 'cells'
+        displayFromMeters = 1 / cellDiameter_m;
+        displayLengthUnit = 'cell diameters';
+        displayVelocityUnit = 'cells/s';
+    case 'microns'
+        displayFromMeters = 1e6;
+        displayLengthUnit = 'µm';
+        displayVelocityUnit = 'µm/s';
+end
+
+units.schemaVersion = 1;
+units.internalLengthUnit = 'm';
+units.internalTimeUnit = 's';
+units.internalForceUnit = 'N';
+units.coordinateInputMode = coordinateInputMode;
+units.displayMode = displayMode;
+units.cellDiameter_um = cellDiameter_um;
+units.cellDiameter_m = cellDiameter_m;
+units.coordinateToMeters = coordinateToMeters;
+units.displayFromMeters = displayFromMeters;
+units.displayLengthUnit = displayLengthUnit;
+units.displayVelocityUnit = displayVelocityUnit;
+units.stiffnessUnit = 'N/m';
+units.dampingUnit = 'N*s/m';
+units.massUnit = 'kg';
+units.strainUnit = 'dimensionless';
+units.damageUnit = 'dimensionless';
+end
+
+
+function mode = normalizeUnitMode(mode, allowedModes, modeDescription)
+if ~(ischar(mode) || (isstring(mode) && isscalar(mode)))
+    error('follicle_rupture:invalidUnitMode', ...
+        '%s mode must be a character vector or scalar string.', modeDescription);
+end
+
+mode = lower(strtrim(char(mode)));
+if ~ismember(mode, allowedModes)
+    error('follicle_rupture:invalidUnitMode', ...
+        'Unknown %s mode "%s". Valid modes are: %s.', ...
+        modeDescription, mode, strjoin(allowedModes, ', '));
 end
 end

@@ -1,21 +1,21 @@
 # Follicle Rupture Shell Simulation
 
-This repository contains a stripped-down MATLAB simulation of follicle rupture
-on an ellipsoidal epithelial shell.
+This repository contains the core MATLAB simulation of follicle rupture on an
+ellipsoidal epithelial shell. It is intentionally minimal so the mechanics can
+be rebuilt from first principles.
 
-The current model is intentionally bare bones:
+The model currently includes:
 
-- surface nodes are connected by passive viscoelastic edges
-- selected rupture edges accumulate damage
-- damage weakens edge stiffness and damping until an edge can fail
-- there is no active actomyosin force
-- there is no active rest-length shortening
-- there is no adaptive neighbor-based recruitment or shortening spread
+- generated ellipsoidal or spreadsheet-based surface nodes
+- passive viscoelastic connections between neighboring nodes
+- localized natural-length contraction and weakest-edge rupture
+- optional soft anchoring and surface constraints
+- adaptive ODE integration with simulation data saved to `results/`
 
-This makes the codebase a baseline rupture-and-weakening model that can be
-extended later with a new shortening mechanism.
+Post-processing includes shell snapshots and percentile-ring velocity plots.
+Video generation and standalone tests are not included at this stage.
 
-## Quick Start
+## Run
 
 Open MATLAB in the repository root and run:
 
@@ -23,24 +23,73 @@ Open MATLAB in the repository root and run:
 run_simulation
 ```
 
-Outputs are written to `results/`:
+The simulation writes `results/follicleShellSim_test2.mat`. Generated results
+are ignored by git; `results/.gitkeep` preserves the output directory.
 
-- `follicleShellSim_test2.mat`: saved simulation data
-- `follicleShellSim_test2_dashboard.png`: rupture/motion diagnostic dashboard
-- `follicleRupture_motion.mp4`: optional motion movie
+## Repository Layout
 
-## Files
+- `run_simulation.m`: adds `src/` to the MATLAB path and starts the model.
+- `src/follicle_rupture_msd_fixed.m`: the complete simulation, including its
+  local geometry, mechanics, unit, input, and progress helpers.
+- `plot_node_position_snapshots.m`: initial, middle, and final shell positions.
+- `plot_percentile_ring_velocity.m`: ring-average speed and rupture damage.
+- `input_node_data/`: optional experimental node-coordinate spreadsheets.
+- `results/`: local generated output.
 
-- `run_simulation.m`: entry point that adds `src/` to the MATLAB path.
-- `src/follicle_rupture_msd_fixed.m`: main model, parameters, ODE solve, and
-  save step.
-- `src/confirm_actomyosin_working.m`: dashboard generator. The filename is
-  retained for compatibility, but the diagnostics now focus on rupture damage
-  and motion rather than actomyosin recruitment.
-- `src/export_follicle_rupture_motion_video.m`: MP4 renderer for a saved `.mat`
-  simulation.
-- `input_node_data/`: optional experimental node coordinate spreadsheets.
-- `results/`: generated outputs.
+## Main Parameters
+
+Edit the user-parameter section near the top of
+`src/follicle_rupture_msd_fixed.m`.
+
+```matlab
+cellDiameter_um = 10;
+coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
+displayMode = 'microns';       % 'cells' or 'microns'
+generatedEllipsoidSemiAxes = [50 15 15];
+
+N = 300;
+tEnd = 1800;
+numSave = 300;
+ruptureSaveEnd = 120;          % dense post-processing window, seconds
+ruptureSaveInterval = 0.25;    % output spacing in that window, seconds
+odeSolver = 'ode45';           % 'ode45', 'ode15s', or 'ode23t'
+```
+
+All mechanics and saved physical data use SI units. Coordinate inputs are
+converted to meters once when geometry is loaded.
+
+## Tracked Node Data
+
+The default run uses only frame 1 of the ignored local file:
+
+```text
+input_node_data/tracked_nodes/trackedNodes_nuc_48_2_OA7_1.mat
+```
+
+It loads `trackedNodes(:,:,1)` as the initial node cloud, interprets its
+coordinates as microns, builds a six-nearest-neighbor edge mesh, and then
+runs the same contraction-driven tip-patch rupture. Later tracked frames are
+not used by the mechanics.
+
+The `input_node_data/tracked_nodes/` folder is ignored by Git.
+
+## Spreadsheet Node Data
+
+To use spreadsheet coordinates, place the file in `input_node_data/` and set:
+
+```matlab
+useExperimentalNodeData = true;
+experimentalNodeDataFileName = 'nodeDataSample1.xlsx';
+```
+
+The first four spreadsheet columns must contain:
+
+```text
+Cell ID, x, y, z
+```
+
+The coordinate columns follow `coordinateInputMode` and
+`cellDiameter_um`.
 
 ## Model State
 
@@ -49,187 +98,28 @@ The ODE state is:
 - `q`: node displacement
 - `v`: node velocity
 - `sigma`, `zeta`: viscoelastic edge states
-- `D`: edge damage, where `0` means intact and `1` means failed
+- `D`: edge damage from `0` (intact) to `1` (failed)
 
-There is no `A_edge` recruitment state in this stripped version.
+The selected weak edge patch lies at the extreme of the principal-axis 0-10%
+tip. Its intact shoulder edges contract, loading the patch in tension and
+pulling its rim nodes back along the shell after rupture. The rupture edges do
+not contract, which avoids collapsing all of their endpoints into a cluster
+before they fail. Both endpoints of a rupture edge must belong to the initial
+0-10% node band; among those candidates, the eight edges nearest the tip are
+selected. Other edges keep their geometric natural lengths and are effectively
+unbreakable.
 
-Each edge keeps its original geometric rest length:
-
-```matlab
-L0_ref = param.L0_edge0;
-stretch = L - L0_ref;
-stretch_dot = geometricStretchDot;
-```
-
-Damage weakens the passive connection element:
-
-```matlab
-g  = max(1 - D, param.g_floor_stiff);
-gd = max(1 - D, param.g_floor_damp);
-```
-
-`g` scales stiffness. `gd` scales damping, with a small floor to avoid
-numerical singularities.
-
-## Main Parameters To Edit
-
-Most settings live near the top of `src/follicle_rupture_msd_fixed.m`.
+The main controls are in `src/follicle_rupture_msd_fixed.m`:
 
 ```matlab
-cellDiameter_um = 10;          % positive cell diameter in microns
-coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
-displayMode = 'microns';       % 'cells' or 'microns'
-generatedEllipsoidSemiAxes = [50 15 15];
-
-N = 300;                         % number of surface nodes
-tEnd = 1800;                     % simulated time, seconds
-numSave = 300;                   % number of saved frames
-runPostprocess = true;           % make dashboard after simulation
-makeRuptureMotionVideo = true;   % export MP4 after simulation
-odeSolver = 'ode45';             % 'ode45', 'ode15s', or 'ode23t'
+param.contractionStartTime = 3;       % seconds
+param.contractionRateFrac_edge(...) = 0.20; % original edge lengths/second
+param.minRestLengthFrac_edge(...) = 0.30;
+param.extensionCritFrac_edge(...) = 0.15; % rupture-patch extension threshold
 ```
 
-### Cell-scale coordinate input
-
-`coordinateInputMode` controls how both `generatedEllipsoidSemiAxes` and the
-`x`, `y`, and `z` columns of an experimental spreadsheet are interpreted:
-
-- `'cells'`: one coordinate unit is one cell diameter
-- `'microns'`: one coordinate unit is 1 µm
-- `'meters'`: coordinates are already in meters
-
-Every coordinate array is converted to meters once, when it enters the
-simulation. The generated default `[50 15 15]` in `'cells'` mode with a
-10 µm cell diameter therefore produces the existing physical semi-axes of
-500 µm × 150 µm × 150 µm.
-
-For example, with 10 µm cells:
-
-```matlab
-cellDiameter_um = 10;
-coordinateInputMode = 'cells';
-generatedEllipsoidSemiAxes = [50 15 15]; % 500 x 150 x 150 µm
-```
-
-With 12 µm cells, 50 input cell diameters represent 600 µm:
-
-```matlab
-cellDiameter_um = 12;
-coordinateInputMode = 'cells';
-generatedEllipsoidSemiAxes = [50 15 15]; % 600 x 180 x 180 µm
-```
-
-To express the original 500 µm × 150 µm × 150 µm geometry directly in
-microns instead:
-
-```matlab
-coordinateInputMode = 'microns';
-generatedEllipsoidSemiAxes = [500 150 150];
-```
-
-`displayMode = 'cells'` plots position and displacement in cell diameters and
-velocity in cells/s. `displayMode = 'microns'` plots them in µm and µm/s.
-The selection affects only logging and plots, never the saved physical data.
-
-### Unit convention
-
-All mechanics use SI units. `nodeCoords`, displacement matrix `Y`, rest
-lengths `L0_edge0`, and time vector `tSol` are saved in meters or seconds as
-appropriate. Each MAT file stores the input, display, cell-diameter, and
-internal-unit metadata in `param.units`.
-
-| Parameter/data category | Internal and saved unit |
-| --- | --- |
-| Coordinates, positions, displacements, ellipsoid axes, edge/rest lengths, `zeta` | m |
-| Time, damage timescales, saved `tSol` | s |
-| Velocity | m/s |
-| Force, edge force state `sigma`, failure threshold, surface-penalty force | N |
-| Edge, anchor, and other linear stiffness | N/m |
-| Edge, surface-normal, drag, and anchor damping | N·s/m |
-| Node mass `mVal` | kg |
-| Strain, damage, masks, percentiles, nondimensional solver state | dimensionless |
-| Damage/priming rates | 1/s |
-
-> **Warning:** changing the coordinate input unit is only a coordinate
-> conversion. It is not valid to reinterpret lengths without also preserving
-> the SI meanings of stiffness, damping, force, and mass. These mechanical
-> parameters remain N/m, N·s/m, N, and kg and are never automatically rescaled.
-
-For a fast test run:
-
-```matlab
-N = 100;
-tEnd = 60;
-numSave = 60;
-runPostprocess = false;
-makeRuptureMotionVideo = false;
-```
-
-## Rupture And Weakening
-
-The rupture region is selected in the damage section:
-
-```matlab
-param.damageMode = 'tipmost-edge'; % 'seam', 'tip', or 'tipmost-edge'
-```
-
-The default model cuts the selected damage edge immediately:
-
-```matlab
-param.instantDamage_on   = true;
-param.instantDamageTime  = 0;
-param.instantDamageTau   = 1e-4;
-```
-
-Tension-gated damage remains available:
-
-```matlab
-param.tipDamage_on = true;
-param.sig_fail_tip = 1e-9;
-param.tau_dmg      = 0.005;
-param.dmg_pow      = 2;
-```
-
-Only edges in `param.damageMask` are eligible for localized rupture damage.
-
-## Experimental Node Data
-
-Experimental node data support is still diagnostic. Set:
-
-```matlab
-useExperimentalNodeData = true;
-```
-
-Expected spreadsheet layout:
-
-```text
-Cell ID, x, y, z
-```
-
-The spreadsheet coordinate columns use the same `coordinateInputMode` and
-`cellDiameter_um` configuration as generated coordinates. For example, a
-spreadsheet value of `50` becomes 500 µm with 10 µm cells in `'cells'` mode,
-while a value of `500` becomes 500 µm in `'microns'` mode.
-
-The loader centers and orients coordinates, fits an ellipsoid for projection,
-and builds a local nearest-neighbor edge graph when `experimentalEdgeMode` is
-`'knn'`.
-
-## Unit Validation
-
-Run the lightweight conversion checks in MATLAB:
-
-```matlab
-addpath('src');
-run('tests/validate_unit_conversions.m');
-```
-
-The checks cover 10 µm and 12 µm cell diameters, equivalent micron/meter
-inputs, display conversion in both modes, invalid configurations, and the
-legacy MAT-file plotting fallback.
-
-## Notes For Future Shortening Work
-
-This version deliberately removes the old adaptive neighbor-based shortening
-path. A future shortening mechanism can be added back against a clean baseline
-by introducing a new rest-length law and, if needed, a new state variable.
+Saved output includes `Lnatural_time`, the natural length of every edge at
+every saved time, in addition to displacement `Y`, velocity `V`, and damage
+`D_time`. After simulation, `run_simulation` opens a node-position snapshot
+figure and a second figure showing mean velocity magnitude for the initial
+0-10%, 25-35%, and 45-55% principal-axis rings.
