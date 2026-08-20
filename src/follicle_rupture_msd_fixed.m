@@ -40,8 +40,8 @@ experimentalEdgeMode = 'knn';          % 'knn' connects all measured nodes; 'hul
 experimentalNeighborCount = 6;         % local neighbors per measured node for 'knn' edge mode
 
 % Passive edge material parameters
-kOuter_range = [1, 1];
-cOuter_range = [1, 1];
+kOuter_range = [2, 1];
+cOuter_range = [2, 1];
 
 % Time integration and saved output
 tEnd  = 1800;                    % s
