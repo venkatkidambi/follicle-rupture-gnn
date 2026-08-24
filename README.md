@@ -12,8 +12,9 @@ The model currently includes:
 - optional soft anchoring and surface constraints
 - adaptive ODE integration with simulation data saved to `results/`
 
-Post-processing includes shell snapshots and percentile-ring velocity plots.
-Video generation and standalone tests are not included at this stage.
+Post-processing includes shell snapshots, percentile-ring displacement and
+velocity plots, and an MP4 animation of the rupture motion. Standalone tests
+are not included at this stage.
 
 ## Run
 
@@ -23,8 +24,12 @@ Open MATLAB in the repository root and run:
 run_simulation
 ```
 
-The simulation writes `results/follicleShellSim_test2.mat`. Generated results
-are ignored by git; `results/.gitkeep` preserves the output directory.
+The simulation writes `results/follicleShellSim_test2.mat`, then exports the
+post-processing figures as `results/node_position_snapshots.png` and
+`results/percentile_ring_velocity.png`. It also renders the rupture motion to
+`results/follicle_rupture_motion.mp4` through the final saved simulation time.
+Generated results are ignored by git; `results/.gitkeep` preserves the output
+directory.
 
 ## Repository Layout
 
@@ -32,7 +37,8 @@ are ignored by git; `results/.gitkeep` preserves the output directory.
 - `src/follicle_rupture_msd_fixed.m`: the complete simulation, including its
   local geometry, mechanics, unit, input, and progress helpers.
 - `plot_node_position_snapshots.m`: initial, middle, and final shell positions.
-- `plot_percentile_ring_velocity.m`: ring-average speed and rupture damage.
+- `plot_percentile_ring_velocity.m`: ring-average displacement and speed.
+- `export_follicle_rupture_motion_video.m`: MP4 animation of shell rupture.
 - `input_node_data/`: optional experimental node-coordinate spreadsheets.
 - `results/`: local generated output.
 
@@ -101,20 +107,22 @@ The ODE state is:
 - `D`: edge damage from `0` (intact) to `1` (failed)
 
 The selected weak edge patch lies at the extreme of the principal-axis 0-10%
-tip. Its intact shoulder edges contract, loading the patch in tension and
-pulling its rim nodes back along the shell after rupture. The rupture edges do
-not contract, which avoids collapsing all of their endpoints into a cluster
-before they fail. Both endpoints of a rupture edge must belong to the initial
-0-10% node band; among those candidates, the eight edges nearest the tip are
-selected. Other edges keep their geometric natural lengths and are effectively
-unbreakable.
+tip. Intact edges crossing the body-facing boundary of the full 0-10% ring
+first contract while damage is disabled, establishing bodyward-oriented
+tension throughout the ring before rupture. Once that preload reaches its
+prescribed rest-length floor, the weak patch edges become eligible to fail and
+release the stored elastic energy. The rupture edges do not contract. Both
+endpoints of a rupture edge must belong to the initial 0-10% node band; among
+those candidates, the eight edges nearest the tip are selected. Other edges
+keep their geometric natural lengths and are effectively unbreakable.
 
 The main controls are in `src/follicle_rupture_msd_fixed.m`:
 
 ```matlab
-param.contractionStartTime = 3;       % seconds
+param.prestressStartTime = 3;         % seconds
 param.contractionRateFrac_edge(...) = 0.20; % original edge lengths/second
 param.minRestLengthFrac_edge(...) = 0.30;
+param.ruptureEnableTime = 6.5;        % derived end of preload phase
 param.extensionCritFrac_edge(...) = 0.15; % rupture-patch extension threshold
 ```
 

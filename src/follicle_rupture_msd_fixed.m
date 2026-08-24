@@ -185,7 +185,7 @@ param.tipMask  = double(sMid >= sCutTip);     % tiny posterior cap edges
 
 %% Damage region selection
 param.damageMode = 'principal-0-10-tip-patch';
-param.tipPatchEdgeCount = 8; % compact weak patch; increase for a larger opening
+param.tipPatchEdgeCount = 12; % compact weak patch; increase for a larger opening
 param.seamWidthFrac = 0.04;   % fraction of posterior-score range
 
 % Compute the same initial long-axis coordinate used by the post-processing
@@ -283,36 +283,41 @@ else
         min(patchPercentiles), max(patchPercentiles));
 end
 
-%% Localized rim retraction
-% Contract the intact shoulder edges that join the rupture-patch nodes to
-% the surrounding shell. Contracting the rupture edges themselves collapses
-% their endpoints into a cluster before failure. The shoulder arrangement
-% instead loads the weak patch in tension and, after failure, keeps drawing
-% its rim nodes back along the shell surface.
-isPatchNodeI = ismember(E(:,1), rupturePatchNodes);
-isPatchNodeJ = ismember(E(:,2), rupturePatchNodes);
-% The patch is at the minimum principal score. Keep only links whose
-% non-patch endpoint has the larger score, i.e. links directed back toward
-% the follicle body instead of farther toward the extreme tip.
-bodyFacingFromI = isPatchNodeI & ~isPatchNodeJ & ...
+%% Bodyward-oriented prestress
+% Preload the body-facing boundary of the full 0-10% tip ring rather than
+% only the tiny rupture patch. The boundary nodes transmit that tension
+% through the intact tip network to the extreme patch before it is allowed
+% to fail. Rupture edges themselves never contract.
+isTipBandNode = principalNodeScore <= principalTipCutoff;
+isTipBandNodeI = isTipBandNode(E(:,1));
+isTipBandNodeJ = isTipBandNode(E(:,2));
+bodyFacingFromI = isTipBandNodeI & ~isTipBandNodeJ & ...
     principalNodeScore(E(:,2)) > principalNodeScore(E(:,1));
-bodyFacingFromJ = isPatchNodeJ & ~isPatchNodeI & ...
+bodyFacingFromJ = isTipBandNodeJ & ~isTipBandNodeI & ...
     principalNodeScore(E(:,1)) > principalNodeScore(E(:,2));
 param.retractionMask = double((bodyFacingFromI | bodyFacingFromJ) & param.damageMask == 0);
 if ~any(param.retractionMask)
-    error('Rupture patch has no intact shoulder edges available for retraction.');
+    error('The 0-10%% tip ring has no intact body-facing edges available for prestress.');
 end
 
-param.contractionStartTime = 3;       % [s]
+% Stage 1: shorten the body-facing boundary edges while the rupture patch is
+% held intact. This stores bodyward-oriented tension before any edge can
+% weaken. Stage 2 begins only after the prescribed preload is complete.
+param.prestressStartTime = 3;         % [s]
+param.contractionStartTime = param.prestressStartTime;
 param.contractionRateFrac_edge = zeros(Ne,1);
-param.contractionRateFrac_edge(param.retractionMask > 0) = 0.20; % [L0/s]
+param.contractionRateFrac_edge(param.retractionMask > 0) = 0.05; % [L0/s]
 param.minRestLengthFrac_edge = ones(Ne,1);
 param.minRestLengthFrac_edge(param.retractionMask > 0) = 0.30;
+param.prestressDuration = max((1 - ...
+    param.minRestLengthFrac_edge(param.retractionMask > 0)) ./ ...
+    param.contractionRateFrac_edge(param.retractionMask > 0));
+param.ruptureEnableTime = param.prestressStartTime + param.prestressDuration;
 
 % The patch edges are weak and fail when stretched by the retracting rim;
 % the shoulder edges remain intact so they continue pulling the rim back.
 param.extensionCritFrac_edge = inf(Ne,1);
-param.extensionCritFrac_edge(param.damageMask > 0) = 0.15;
+param.extensionCritFrac_edge(param.damageMask > 0) = 0.10;
 
 if any(param.contractionRateFrac_edge < 0) || ...
         any(param.minRestLengthFrac_edge <= 0 | param.minRestLengthFrac_edge > 1)
@@ -336,12 +341,15 @@ fprintf('[ANCHOR] enabled = %d | eligible anchor nodes = %d/%d\n', ...
     param.anchor_on, nnz(param.anchorNodeMask), N);
 
 retractingEdges = find(param.retractionMask > 0);
-fprintf('[RETRACTION] shoulder edges = %s | start = %.3g s | rate = %.3g L0/s | floor = %.3g L0\n', ...
+fprintf('[PRESTRESS] body-facing ring edges = %s | start = %.3g s | rate = %.3g L0/s | floor = %.3g L0\n', ...
     mat2str(retractingEdges.'), param.contractionStartTime, ...
     param.contractionRateFrac_edge(retractingEdges(1)), ...
     param.minRestLengthFrac_edge(retractingEdges(1)));
-fprintf('[RUPTURE] weak patch edges = %s | break = %.3g L0 extension\n', ...
-    mat2str(selectedDamageEdge.'), param.extensionCritFrac_edge(selectedDamageEdge(1)));
+fprintf(['[PRESTRESS/RUPTURE] preload duration = %.3g s | rupture enabled = %.3g s | ', ...
+    'weak patch edges = %s | break = %.3g L0 extension\n'], ...
+    param.prestressDuration, param.ruptureEnableTime, ...
+    mat2str(selectedDamageEdge.'), ...
+    param.extensionCritFrac_edge(selectedDamageEdge(1)));
 
 %% Damage / rupture parameters
 param.ruptureDamageTau = 0.005; % [s], rapid continuous approximation to a break
@@ -598,7 +606,10 @@ dD = zeros(Ne,1);
 % ---- Weakest-edge rupture from critical extension ----
 % This is the direct 3D counterpart of ext >= delt_crit in the chain model.
 criticalExtension = param.extensionCritFrac_edge(:) .* L0_ref;
-breaking = (param.damageMask(:) > 0) & (stretch >= criticalExtension);
+ruptureEnabled = ~isfield(param, 'ruptureEnableTime') || ...
+    t >= param.ruptureEnableTime;
+breaking = ruptureEnabled & (param.damageMask(:) > 0) & ...
+    (stretch >= criticalExtension);
 if any(breaking)
     tauBreak = max(param.ruptureDamageTau, 1e-8);
     dD(breaking) = (1 - D(breaking)) ./ tauBreak;
