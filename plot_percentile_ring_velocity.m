@@ -1,5 +1,5 @@
 function [hFig, info] = plot_percentile_ring_velocity(simFile)
-%PLOT_PERCENTILE_RING_VELOCITY Plot ring displacement and velocity magnitudes.
+%PLOT_PERCENTILE_RING_VELOCITY Plot signed long-axis ring motion.
 %   plot_percentile_ring_velocity() reads the default simulation result.
 %   plot_percentile_ring_velocity(simFile) reads the specified MAT-file.
 %
@@ -91,14 +91,24 @@ end
 
 velocityComponents = reshape(V.', 3, N, Nt);
 nodeSpeed = squeeze(sqrt(sum(velocityComponents.^2, 1))).';
+nodeAxialVelocity = squeeze(sum(velocityComponents .* ...
+    reshape(longAxis, 3, 1, 1), 1)).';
 displacementComponents = reshape(Y.', 3, N, Nt);
 nodeDisplacement = squeeze(sqrt(sum(displacementComponents.^2, 1))).';
+nodeAxialDisplacement = squeeze(sum(displacementComponents .* ...
+    reshape(longAxis, 3, 1, 1), 1)).';
 meanBandSpeed = zeros(Nt, size(bandMasks,2));
 meanBandDisplacement = zeros(Nt, size(bandMasks,2));
+meanBandAxialVelocity = zeros(Nt, size(bandMasks,2));
+meanBandAxialDisplacement = zeros(Nt, size(bandMasks,2));
 for bandIdx = 1:size(bandMasks,2)
     meanBandSpeed(:,bandIdx) = mean(nodeSpeed(:,bandMasks(:,bandIdx)), 2);
     meanBandDisplacement(:,bandIdx) = ...
         mean(nodeDisplacement(:,bandMasks(:,bandIdx)), 2);
+    meanBandAxialVelocity(:,bandIdx) = ...
+        mean(nodeAxialVelocity(:,bandMasks(:,bandIdx)), 2);
+    meanBandAxialDisplacement(:,bandIdx) = ...
+        mean(nodeAxialDisplacement(:,bandMasks(:,bandIdx)), 2);
 end
 
 displayScale = 1e6;
@@ -111,27 +121,33 @@ if isfield(S, 'param') && isfield(S.param, 'units') && ...
 end
 meanBandSpeedDisplay = meanBandSpeed * displayScale;
 meanBandDisplacementDisplay = meanBandDisplacement * displayScale;
+meanBandAxialVelocityDisplay = meanBandAxialVelocity * displayScale;
+meanBandAxialDisplacementDisplay = meanBandAxialDisplacement * displayScale;
 
 colors = [0.88 0.20 0.18; 0.20 0.62 0.30; 0.20 0.42 0.88];
 bandLabels = {'0-10 percentile', '25-35 percentile', '45-55 percentile'};
 [~, simFileName, simFileExtension] = fileparts(simFile);
-hFig = figure('Color', 'w', 'Name', 'Percentile-ring displacement and velocity');
+hFig = figure('Color', 'w', 'Name', 'Signed percentile-ring axial motion');
 layout = tiledlayout(hFig, 2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 displacementAx = nexttile(layout);
 velocityAx = nexttile(layout);
 
 hold(displacementAx, 'on');
 hold(velocityAx, 'on');
-for bandIdx = 1:size(meanBandSpeedDisplay,2)
-    plot(displacementAx, tSol, meanBandDisplacementDisplay(:,bandIdx), '-', ...
+for bandIdx = 1:size(meanBandAxialVelocityDisplay,2)
+    plot(displacementAx, tSol, meanBandAxialDisplacementDisplay(:,bandIdx), '-', ...
         'Color', colors(bandIdx,:), 'LineWidth', 2.0, ...
         'DisplayName', bandLabels{bandIdx});
-    plot(velocityAx, tSol, meanBandSpeedDisplay(:,bandIdx), '-', ...
+    plot(velocityAx, tSol, meanBandAxialVelocityDisplay(:,bandIdx), '-', ...
         'Color', colors(bandIdx,:), 'LineWidth', 2.0, ...
         'DisplayName', bandLabels{bandIdx});
 end
-ylabel(displacementAx, sprintf('Mean displacement magnitude (%s)', displayUnit));
-ylabel(velocityAx, sprintf('Mean velocity magnitude (%s/s)', displayUnit));
+yline(displacementAx, 0, ':', 'Color', [0.35 0.35 0.35], ...
+    'HandleVisibility', 'off');
+yline(velocityAx, 0, ':', 'Color', [0.35 0.35 0.35], ...
+    'HandleVisibility', 'off');
+ylabel(displacementAx, sprintf('Mean axial displacement (%s)', displayUnit));
+ylabel(velocityAx, sprintf('Mean axial velocity (%s/s)', displayUnit));
 
 % Keep the plot centered on the densely sampled rupture window instead of
 % allowing the long, quiescent tail to dominate the horizontal scale.
@@ -146,21 +162,21 @@ end
 xLimits = [tSol(1), tSol(plotEndFrame)];
 xlim(displacementAx, xLimits);
 xlim(velocityAx, xLimits);
-visibleDisplacements = meanBandDisplacementDisplay(1:plotEndFrame,:);
-peakVisibleDisplacement = max(visibleDisplacements, [], 'all');
+visibleDisplacements = meanBandAxialDisplacementDisplay(1:plotEndFrame,:);
+peakVisibleDisplacement = max(abs(visibleDisplacements), [], 'all');
 if peakVisibleDisplacement > 0
-    ylim(displacementAx, [0, 1.05 * peakVisibleDisplacement]);
+    ylim(displacementAx, 1.05 * peakVisibleDisplacement * [-1 1]);
 end
-visibleSpeeds = meanBandSpeedDisplay(1:plotEndFrame,:);
-peakVisibleSpeed = max(visibleSpeeds, [], 'all');
+visibleSpeeds = meanBandAxialVelocityDisplay(1:plotEndFrame,:);
+peakVisibleSpeed = max(abs(visibleSpeeds), [], 'all');
 if peakVisibleSpeed > 0
-    ylim(velocityAx, [0, 1.05 * peakVisibleSpeed]);
+    ylim(velocityAx, 1.05 * peakVisibleSpeed * [-1 1]);
 end
 
 xlabel(velocityAx, 'Time (s)');
-title(displacementAx, 'Displacement magnitude');
-title(velocityAx, 'Velocity magnitude');
-title(layout, sprintf('Rupture-time motion of initial principal-axis percentile rings — %s', ...
+title(displacementAx, 'Signed displacement away from tip (+) / toward tip (-)');
+title(velocityAx, 'Signed velocity away from tip (+) / toward tip (-)');
+title(layout, sprintf('Long-axis motion of initial principal-axis percentile rings — %s', ...
     [simFileName simFileExtension]), 'Interpreter', 'none');
 grid(displacementAx, 'on');
 grid(velocityAx, 'on');
@@ -179,8 +195,14 @@ info.bandNodeIndices = arrayfun(@(idx) find(bandMasks(:,idx)), ...
 info.nodeDisplacement = nodeDisplacement;
 info.meanBandDisplacement = meanBandDisplacement;
 info.meanBandDisplacementDisplay = meanBandDisplacementDisplay;
+info.nodeAxialDisplacement = nodeAxialDisplacement;
+info.meanBandAxialDisplacement = meanBandAxialDisplacement;
+info.meanBandAxialDisplacementDisplay = meanBandAxialDisplacementDisplay;
 info.nodeSpeed = nodeSpeed;
 info.meanBandSpeed = meanBandSpeed;
 info.meanBandSpeedDisplay = meanBandSpeedDisplay;
+info.nodeAxialVelocity = nodeAxialVelocity;
+info.meanBandAxialVelocity = meanBandAxialVelocity;
+info.meanBandAxialVelocityDisplay = meanBandAxialVelocityDisplay;
 info.plotTimeLimit = [tSol(1), tSol(plotEndFrame)];
 end

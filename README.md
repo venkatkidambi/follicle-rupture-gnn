@@ -12,9 +12,9 @@ The model currently includes:
 - optional soft anchoring and surface constraints
 - adaptive ODE integration with simulation data saved to `results/`
 
-Post-processing includes shell snapshots, percentile-ring displacement and
-velocity plots, and an MP4 animation of the rupture motion. Standalone tests
-are not included at this stage.
+Post-processing includes shell snapshots, signed long-axis percentile-ring
+displacement and velocity plots, and an MP4 animation of the rupture motion.
+Standalone tests are not included at this stage.
 
 ## Run
 
@@ -49,7 +49,7 @@ Edit the user-parameter section near the top of
 
 ```matlab
 cellDiameter_um = 10;
-coordinateInputMode = 'cells'; % 'cells', 'microns', or 'meters'
+coordinateInputMode = 'microns'; % 'cells', 'microns', or 'meters'
 displayMode = 'microns';       % 'cells' or 'microns'
 generatedEllipsoidSemiAxes = [50 15 15];
 
@@ -107,27 +107,37 @@ The ODE state is:
 - `D`: edge damage from `0` (intact) to `1` (failed)
 
 The selected weak edge patch lies at the extreme of the principal-axis 0-10%
-tip. Intact edges crossing the body-facing boundary of the full 0-10% ring
-first contract while damage is disabled, establishing bodyward-oriented
-tension throughout the ring before rupture. Once that preload reaches its
-prescribed rest-length floor, the weak patch edges become eligible to fail and
-release the stored elastic energy. The rupture edges do not contract. Both
-endpoints of a rupture edge must belong to the initial 0-10% node band; among
-those candidates, the eight edges nearest the tip are selected. Other edges
-keep their geometric natural lengths and are effectively unbreakable.
+tip. Predominantly axial, intact edges from the tip toward the 90th-percentile
+far-body cap contract in a tip-to-body activation wave. Inactive nodes remain
+temporarily adhered at their initial positions while bodyward surface traction
+ramps up; they then release in percentile order and slide away from the tip.
+The far-body cap remains softly anchored. Shortly after the wave reaches the
+far body, the weak patch edges become eligible to fail while the corridor is
+still retracting. The rupture edges do not contract. Both endpoints of a
+rupture edge must belong to the initial 0-10% node band; among those candidates,
+the twelve edges nearest the tip are selected. Other edges are effectively
+unbreakable.
 
 The main controls are in `src/follicle_rupture_msd_fixed.m`:
 
 ```matlab
 param.prestressStartTime = 3;         % seconds
-param.contractionRateFrac_edge(...) = 0.20; % original edge lengths/second
-param.minRestLengthFrac_edge(...) = 0.30;
-param.ruptureEnableTime = 6.5;        % derived end of preload phase
-param.extensionCritFrac_edge(...) = 0.15; % rupture-patch extension threshold
+param.anchorPercentile = 90;          % softly anchored far-body cap
+param.contractionMinAxialAlignment = 0.35;
+param.contractionWaveDuration = 10;   % tip-to-body activation, seconds
+param.ruptureDelayAfterWaveArrival = 4;
+param.contractionRateFrac_edge(...) = 0.005; % original edge lengths/second
+param.minRestLengthFrac_edge(...) = 0.93;
+param.activeTractionForce = 1e-7;     % tangential bodyward force, N/node
+param.activeTractionDuration = 20;    % seconds per node
+param.wavefrontHold_on = true;        % no-slip before traction is established
+param.ruptureEnableTime = 17;         % derived rupture gate
+param.extensionCritFrac_edge(...) = 0.05; % rupture-patch extension threshold
 ```
 
 Saved output includes `Lnatural_time`, the natural length of every edge at
 every saved time, in addition to displacement `Y`, velocity `V`, and damage
 `D_time`. After simulation, `run_simulation` opens a node-position snapshot
-figure and a second figure showing mean velocity magnitude for the initial
-0-10%, 25-35%, and 45-55% principal-axis rings.
+figure and a second figure showing signed long-axis displacement and velocity
+for the initial 0-10%, 25-35%, and 45-55% principal-axis rings. Positive values
+indicate motion away from the rupture tip.

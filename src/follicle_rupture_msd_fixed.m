@@ -35,7 +35,7 @@ experimentalCenterMode = 'median';   % 'median', 'mean', or 'none'
 experimentalOrientMode = 'principal-axes'; % 'principal-axes' aligns long axis to model x-axis
 experimentalLongAxisSign = -1;        % set 1 to flip experimental anterior/posterior ends
 experimentalSurfaceConstraintMode = 'reference-ellipsoid'; % preserve each measured node's initial shell level
-experimentalAnchorOn = false;          % measured node clouds should not have a frozen anterior shell
+experimentalAnchorOn = true;           % softly hold the far body end during directional retraction
 experimentalEdgeMode = 'knn';          % 'knn' connects all measured nodes; 'hull' uses convex hull only
 experimentalNeighborCount = 6;         % local neighbors per measured node for 'knn' edge mode
 
@@ -283,69 +283,109 @@ else
         min(patchPercentiles), max(patchPercentiles));
 end
 
-%% Bodyward-oriented prestress
-% Preload the body-facing boundary of the full 0-10% tip ring rather than
-% only the tiny rupture patch. The boundary nodes transmit that tension
-% through the intact tip network to the extreme patch before it is allowed
-% to fail. Rupture edges themselves never contract.
-isTipBandNode = principalNodeScore <= principalTipCutoff;
-isTipBandNodeI = isTipBandNode(E(:,1));
-isTipBandNodeJ = isTipBandNode(E(:,2));
-bodyFacingFromI = isTipBandNodeI & ~isTipBandNodeJ & ...
-    principalNodeScore(E(:,2)) > principalNodeScore(E(:,1));
-bodyFacingFromJ = isTipBandNodeJ & ~isTipBandNodeI & ...
-    principalNodeScore(E(:,1)) > principalNodeScore(E(:,2));
-param.retractionMask = double((bodyFacingFromI | bodyFacingFromJ) & param.damageMask == 0);
+%% Distributed bodyward-oriented prestress
+% Form a chain of actively shortening, predominantly axial edges from the
+% rupture tip toward a softly anchored far-body cap. With the far end held,
+% shortening along this corridor draws each intervening percentile ring
+% away from the tip. Rupture edges themselves never contract.
+param.anchorPercentile = 90;
+param.anchorCutoff = prctile(principalNodeScore, param.anchorPercentile);
+param.anchorNodeMask = double(principalNodeScore >= param.anchorCutoff);
+
+edgeLongAxisSpan = abs(principalNodeScore(E(:,2)) - ...
+    principalNodeScore(E(:,1)));
+edgeAxialAlignment = edgeLongAxisSpan ./ max(param.L0_edge0, 1e-18);
+param.contractionMinAxialAlignment = 0.35;
+reachesTowardAnchor = principalEdgeScore <= param.anchorCutoff & ...
+    ~(param.anchorNodeMask(E(:,1)) > 0 & param.anchorNodeMask(E(:,2)) > 0);
+param.retractionMask = double(reachesTowardAnchor & ...
+    edgeAxialAlignment >= param.contractionMinAxialAlignment & ...
+    param.damageMask == 0);
 if ~any(param.retractionMask)
-    error('The 0-10%% tip ring has no intact body-facing edges available for prestress.');
+    error('No intact axial edges are available for distributed bodyward prestress.');
 end
 
-% Stage 1: shorten the body-facing boundary edges while the rupture patch is
-% held intact. This stores bodyward-oriented tension before any edge can
-% weaken. Stage 2 begins only after the prescribed preload is complete.
+% Activate shortening from the rupture tip toward the anchored body. Since
+% pairwise shortening alone pulls its two sides toward one another, a matching
+% tip-to-body tangential traction wave supplies the directional bias that
+% keeps every activated ring moving away from the tip.
 param.prestressStartTime = 3;         % [s]
 param.contractionStartTime = param.prestressStartTime;
+param.contractionWaveDuration = 10;   % [s], rupture tip to far body
 param.contractionRateFrac_edge = zeros(Ne,1);
-param.contractionRateFrac_edge(param.retractionMask > 0) = 0.05; % [L0/s]
+param.contractionRateFrac_edge(param.retractionMask > 0) = 0.005; % [L0/s]
 param.minRestLengthFrac_edge = ones(Ne,1);
-param.minRestLengthFrac_edge(param.retractionMask > 0) = 0.30;
-param.prestressDuration = max((1 - ...
+param.minRestLengthFrac_edge(param.retractionMask > 0) = 0.93;
+param.contractionStartTime_edge = inf(Ne,1);
+activeEdgeScore = principalEdgeScore(param.retractionMask > 0);
+activeScoreMin = min(activeEdgeScore);
+activeScoreSpan = max(param.anchorCutoff - activeScoreMin, 1e-18);
+activeBodywardFraction = min(max((activeEdgeScore - activeScoreMin) ./ ...
+    activeScoreSpan, 0), 1);
+param.contractionStartTime_edge(param.retractionMask > 0) = ...
+    param.prestressStartTime + ...
+    activeBodywardFraction * param.contractionWaveDuration;
+param.contractionDuration_edge = zeros(Ne,1);
+param.contractionDuration_edge(param.retractionMask > 0) = (1 - ...
     param.minRestLengthFrac_edge(param.retractionMask > 0)) ./ ...
-    param.contractionRateFrac_edge(param.retractionMask > 0));
-param.ruptureEnableTime = param.prestressStartTime + param.prestressDuration;
+    param.contractionRateFrac_edge(param.retractionMask > 0);
+param.prestressDuration = max(param.contractionStartTime_edge(param.retractionMask > 0) + ...
+    param.contractionDuration_edge(param.retractionMask > 0)) - ...
+    param.prestressStartTime;
+nodeScoreMin = min(principalNodeScore);
+nodeScoreSpan = max(param.anchorCutoff - nodeScoreMin, 1e-18);
+nodeBodywardFraction = min(max((principalNodeScore - nodeScoreMin) ./ ...
+    nodeScoreSpan, 0), 1);
+param.activeTraction_on = true;
+param.activeTractionStartTime_node = param.prestressStartTime + ...
+    nodeBodywardFraction * param.contractionWaveDuration;
+param.activeTractionStartTime_node(param.anchorNodeMask > 0) = inf;
+param.activeTractionDuration = 20;    % [s] per node
+param.activeTractionRampTime = 1;     % [s] smooth force onset/offset
+param.activeTractionForce = 1e-7;     % [N] tangent force away from tip
+param.wavefrontHold_on = true;
+param.wavefrontHoldUntil_node = param.activeTractionStartTime_node + ...
+    param.activeTractionRampTime;
 
-% The patch edges are weak and fail when stretched by the retracting rim;
-% the shoulder edges remain intact so they continue pulling the rim back.
+param.ruptureDelayAfterWaveArrival = 4; % [s] after wave reaches far body
+param.ruptureEnableTime = param.prestressStartTime + ...
+    param.contractionWaveDuration + param.ruptureDelayAfterWaveArrival;
+
+% The patch edges are weak and fail when stretched by the retracting tissue;
+% the axial corridor remains intact so it continues drawing the rings back.
 param.extensionCritFrac_edge = inf(Ne,1);
-param.extensionCritFrac_edge(param.damageMask > 0) = 0.10;
+param.extensionCritFrac_edge(param.damageMask > 0) = 0.05;
 
 if any(param.contractionRateFrac_edge < 0) || ...
         any(param.minRestLengthFrac_edge <= 0 | param.minRestLengthFrac_edge > 1)
     error('Contraction rates must be nonnegative and rest-length floors must lie in (0,1].');
 end
 
-% Optional weak anterior anchoring. This is a soft positional boundary
-% condition to stabilize directional epithelial retraction, not a rigid pin.
+% Soft far-body anchoring provides the directional reference for the
+% distributed contraction. It is a positional tether, not a rigid pin.
 if useExperimentalNodeData
     param.anchor_on = experimentalAnchorOn;
 else
-    param.anchor_on = false; % temporarily disabled to allow post-rupture recoil
+    param.anchor_on = true;
 end
-param.anchorPct = 60;          % anterior-most percentile of nodes
-param.k_anchor = 10;        % weak positional tether stiffness
-param.c_anchor = 1;        % anchor damping
+param.k_anchor = 10;           % [N/m] positional tether stiffness
+param.c_anchor = 1;            % [N*s/m] anchor damping
 
-sCutAnchor = prctile(sNodes, param.anchorPct);
-param.anchorNodeMask = double(sNodes <= sCutAnchor);
-fprintf('[ANCHOR] enabled = %d | eligible anchor nodes = %d/%d\n', ...
-    param.anchor_on, nnz(param.anchorNodeMask), N);
+fprintf('[ANCHOR] enabled = %d | far-body nodes >= P%d = %d/%d\n', ...
+    param.anchor_on, param.anchorPercentile, nnz(param.anchorNodeMask), N);
 
 retractingEdges = find(param.retractionMask > 0);
-fprintf('[PRESTRESS] body-facing ring edges = %s | start = %.3g s | rate = %.3g L0/s | floor = %.3g L0\n', ...
-    mat2str(retractingEdges.'), param.contractionStartTime, ...
+fprintf('[PRESTRESS] axial corridor edges = %d | alignment >= %.2f | start = %.3g s | wave = %.3g s tip-to-body | rate = %.3g L0/s | floor = %.3g L0\n', ...
+    numel(retractingEdges), param.contractionMinAxialAlignment, ...
+    param.contractionStartTime, param.contractionWaveDuration, ...
     param.contractionRateFrac_edge(retractingEdges(1)), ...
     param.minRestLengthFrac_edge(retractingEdges(1)));
-fprintf(['[PRESTRESS/RUPTURE] preload duration = %.3g s | rupture enabled = %.3g s | ', ...
+fprintf('[TRACTION] tip-to-body tangent force = %.3g N/node | duration = %.3g s | ramp = %.3g s\n', ...
+    param.activeTractionForce, param.activeTractionDuration, ...
+    param.activeTractionRampTime);
+fprintf('[WAVEFRONT HOLD] enabled = %d | no-slip release after %.3g s traction ramp\n', ...
+    param.wavefrontHold_on, param.activeTractionRampTime);
+fprintf(['[PRESTRESS/RUPTURE] corridor shortening duration = %.3g s | rupture enabled = %.3g s | ', ...
     'weak patch edges = %s | break = %.3g L0 extension\n'], ...
     param.prestressDuration, param.ruptureEnableTime, ...
     mat2str(selectedDamageEdge.'), ...
@@ -627,7 +667,32 @@ if useEllipsoidNormalDamping
 end
 F_drag  = -param.c_drag * vMat;
 
-Fnet = Fnet + F_surf + F_dampN + F_drag;
+% Directed active traction along the fitted surface. This represents the
+% external reaction supplied by basal adhesion or surrounding tissue, which
+% pairwise edge contraction cannot provide by itself.
+F_active = zeros(N,3);
+if isfield(param, 'activeTraction_on') && param.activeTraction_on
+    tractionStart = param.activeTractionStartTime_node(:);
+    rampTime = max(param.activeTractionRampTime, 1e-8);
+    rampUp = min(max((t - tractionStart) ./ rampTime, 0), 1);
+    rampDown = min(max((tractionStart + param.activeTractionDuration - t) ./ ...
+        rampTime, 0), 1);
+    tractionActivity = rampUp .* rampDown;
+
+    bodywardDirection = repmat(param.principalLongAxis0(:).', N, 1);
+    if useEllipsoidNormals
+        bodywardDirection = bodywardDirection - ...
+            sum(bodywardDirection .* nSurf, 2) .* nSurf;
+    end
+    directionNorm = vecnorm(bodywardDirection, 2, 2);
+    validDirection = directionNorm > 1e-12;
+    bodywardDirection(validDirection,:) = ...
+        bodywardDirection(validDirection,:) ./ directionNorm(validDirection);
+    bodywardDirection(~validDirection,:) = 0;
+    F_active = param.activeTractionForce .* tractionActivity .* bodywardDirection;
+end
+
+Fnet = Fnet + F_surf + F_dampN + F_drag + F_active;
 
 % Soft anterior positional boundary condition. This weak tether biases
 % directional retraction without rigidly pinning nodes or adding contact.
@@ -641,6 +706,17 @@ dqdt = reshape(vMat.', [], 1);
 
 % dv/dt
 dvdt = reshape((Fnet/param.m).',[],1);
+
+% Before the activation front arrives, basal adhesion holds each free node
+% exactly at its measured position. Traction ramps up during this no-slip
+% phase, then the node releases with an already bodyward-directed load.
+if isfield(param, 'wavefrontHold_on') && param.wavefrontHold_on
+    heldNodes = t < param.wavefrontHoldUntil_node(:) & ...
+        param.anchorNodeMask(:) == 0;
+    heldDofs = reshape(repmat(heldNodes.', 3, 1), [], 1);
+    dqdt(heldDofs) = 0;
+    dvdt(heldDofs) = 0;
+end
 
 % assemble
 dxdt = [dqdt; dvdt; dsigma; dzeta; dD];
@@ -701,12 +777,17 @@ function [Lnatural, LnaturalDot] = contractingNaturalLengths(t, param)
 L0 = param.L0_edge0(:);
 rateFrac = param.contractionRateFrac_edge(:);
 floorFrac = param.minRestLengthFrac_edge(:);
-elapsed = max(t - param.contractionStartTime, 0);
+if isfield(param, 'contractionStartTime_edge')
+    startTime = param.contractionStartTime_edge(:);
+else
+    startTime = param.contractionStartTime;
+end
+elapsed = max(t - startTime, 0);
 unclampedFrac = 1 - rateFrac .* elapsed;
 lengthFrac = max(unclampedFrac, floorFrac);
 Lnatural = L0 .* lengthFrac;
 
-isShortening = (t >= param.contractionStartTime) & ...
+isShortening = (t >= startTime) & ...
     (rateFrac > 0) & (unclampedFrac > floorFrac);
 LnaturalDot = -L0 .* rateFrac .* isShortening;
 end
