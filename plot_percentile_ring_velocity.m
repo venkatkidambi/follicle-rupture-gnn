@@ -149,16 +149,8 @@ yline(velocityAx, 0, ':', 'Color', [0.35 0.35 0.35], ...
 ylabel(displacementAx, sprintf('Mean axial displacement (%s)', displayUnit));
 ylabel(velocityAx, sprintf('Mean axial velocity (%s/s)', displayUnit));
 
-% Keep the plot centered on the densely sampled rupture window instead of
-% allowing the long, quiescent tail to dominate the horizontal scale.
-if isfield(S, 'param') && isfield(S.param, 'ruptureSaveEnd')
-    plotEndFrame = find(tSol <= S.param.ruptureSaveEnd, 1, 'last');
-    if isempty(plotEndFrame)
-        plotEndFrame = min(Nt, 2);
-    end
-else
-    plotEndFrame = Nt;
-end
+% Show the complete saved simulation, including the long post-rupture tail.
+plotEndFrame = Nt;
 xLimits = [tSol(1), tSol(plotEndFrame)];
 xlim(displacementAx, xLimits);
 xlim(velocityAx, xLimits);

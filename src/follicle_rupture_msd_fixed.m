@@ -7,26 +7,19 @@ function follicle_rupture_msd_fixed
 
 clc; close all;
 
-rng(42);
+%% USER PARAMETERS
+% Edit this section to configure a run. Derived arrays and timing values are
+% constructed later from these scalar controls.
 
-%% USER-PARAMETERS
-% Cell-scale coordinate and display configuration
-cellDiameter_um = 10;          % positive cell diameter in microns
-coordinateInputMode = 'microns'; % trackedNodes coordinates are treated as microns
-displayMode = 'microns';       % 'cells' or 'microns'
+% Reproducibility, units, and generated geometry
+randomSeed = 42;
+cellDiameter_um = 10;            % positive cell diameter in microns
+coordinateInputMode = 'microns'; % 'cells', 'microns', or 'meters'
+displayMode = 'microns';         % 'cells' or 'microns'
+N = 300;                         % generated-node count; tracked data overrides it
+generatedEllipsoidSemiAxes = [50 15 15]; % coordinateInputMode units
 
-% Generated ellipsoid semi-axes in coordinateInputMode units. Defaults are
-% 50 x 15 x 15 cell diameters = 500 x 150 x 150 microns for 10 um cells.
-generatedEllipsoidSemiAxes = [50 15 15];
-
-% All coordinate inputs are converted to meters once at geometry ingestion.
-% Mechanics and saved physical data remain SI: force N, stiffness N/m,
-% damping N*s/m, mass kg, time s; strain and damage are dimensionless.
-units = buildUnitSystem(cellDiameter_um, coordinateInputMode, displayMode);
-
-% Simulation resolution / scale
-N = 300;                    % overridden by tracked node count below
-mVal = 1;                 % [kg] smaller mass reduces inertial coasting
+% Experimental geometry and connectivity
 useExperimentalNodeData = true;
 experimentalNodeDataFileName = fullfile('tracked_nodes', 'trackedNodes_nuc_48_2_OA7_1.mat');
 experimentalNodeDataVariable = 'trackedNodes';
@@ -39,17 +32,69 @@ experimentalAnchorOn = true;           % softly hold the far body end during dir
 experimentalEdgeMode = 'knn';          % 'knn' connects all measured nodes; 'hull' uses convex hull only
 experimentalNeighborCount = 6;         % local neighbors per measured node for 'knn' edge mode
 
-% Passive edge material parameters
-kOuter_range = [2, 1];
-cOuter_range = [2, 1];
+% Passive mechanics and surface coupling
+mVal = 1;                           % [kg]
+kOuter_range = [1, 1];              % [N/m], two passive spring branches
+cOuter_range = [1, 1];              % [N*s/m], two passive damping branches
+param.connectionModel = 'maxwell';  % spring, damper, maxwell, kelvin-voigt, zener, burgers
+param.postAxis = 1;
+param.postSign = 1;                  % tracked-node rupture tip convention
+param.k_surf = 5e-6;                % [N] surface penalty strength
+param.c_surf = 1;                   % [N*s/m] normal surface damping
+param.c_drag = 0.1;                 % [N*s/m] background tissue drag
+param.projectEdgeForcesToSurface = true;
+
+% Rupture-region selection
+param.damageMode = 'principal-0-10-tip-patch';
+param.tipPct = 98.5;                % used by the alternate 'tip'/'seam' modes
+param.seamWidthFrac = 0.04;         % used by the alternate 'seam' mode
+param.principalTipPercentile = 10;
+param.tipPatchEdgeCount = 12;
+
+% Distributed contraction and directional traction
+param.anchorPercentile = 90;
+param.contractionMinAxialAlignment = 0.35;
+param.prestressStartTime = 3;       % [s]
+param.activationRiseTime = 5;       % [s]
+param.contractionRateFrac = 0.001;  % [L0/s]
+param.minRestLengthFrac = 0.80;     % final fraction of initial edge length
+param.activeTraction_on = true;
+param.activeTractionForce = 1e-7;   % [N/node], away from the rupture tip
+
+% Smooth load-dependent adhesion clutch
+param.adhesionClutch_on = true;
+param.adhesionLoadThresholdTip = 5e-8;     % [N]
+param.adhesionLoadThresholdBody = 1.5e-7;  % [N] at the P90 anchor boundary
+param.adhesionTransitionWidthFrac = 1;
+param.adhesionDragStuck = 0.05;              % [N*s/m]
+param.adhesionDragSliding = 0.05;          % [N*s/m]
+param.adhesionLoadRegularization = 1e-12;  % [N]
+
+% Far-body anchor and rupture law
+param.k_anchor = 10;                % [N/m]
+param.c_anchor = 1;                 % [N*s/m]
+param.extensionCritFrac = 0.05;     % [L0] weak-edge extension to rupture
+param.ruptureDamageTau = 0.005;     % [s] continuous break timescale
+param.g_floor_stiff = 0;            % residual stiffness after failure
+param.g_floor_damp = 1e-6;          % residual damping after failure
 
 % Time integration and saved output
-tEnd  = 1800;                    % s
-numSave = 300;                 % saved output frames; solver still adapts internally
-ruptureSaveEnd = 120;          % [s], densely sample the rupture transient
-ruptureSaveInterval = 0.25;    % [s], output spacing during the rupture window
-odeSolver = 'ode45';           % instant damage is stiff; ode15s handles it better
-progressEveryPhysSec = 5;      % console progress interval in physical seconds
+tEnd = 1800;                       % [s]
+numSave = 300;                     % frames after the dense rupture window
+ruptureSaveEnd = 120;              % [s]
+ruptureSaveInterval = 0.25;        % [s]
+odeSolver = 'ode45';               % ode45, ode15s, or ode23t
+relativeTolerance = 1e-5;
+absoluteTolerance = 1e-8;
+maximumSolverStep = 5;
+initialSolverStep = 1e-3;
+progressEveryPhysSec = 5;          % [s]
+
+%% Derived setup
+% Inputs are converted to meters once at geometry ingestion. Mechanics and
+% saved physical data remain SI; strain and damage are dimensionless.
+rng(randomSeed);
+units = buildUnitSystem(cellDiameter_um, coordinateInputMode, displayMode);
 
 repoRoot = fileparts(fileparts(mfilename('fullpath')));
 outputDir = fullfile(repoRoot, 'results');
@@ -100,20 +145,10 @@ param.experimentalEdgeMode = experimentalEdgeMode;
 param.experimentalNeighborCount = experimentalNeighborCount;
 param.experimentalCellIds = experimentalCellIds;
 
-% Posterior axis convention
-param.postAxis = 1;
-param.postSign = 1; % tracked-node rupture/0-10% bands use the opposite physical tip
-
-% Surface penalty + normal damping
-param.k_surf = 5e-6;     % [N] penalty strength
-param.c_surf = 1;        % [N*s/m] suppress motion away from the local shell tangent
-param.c_drag = 0.1;        % [N*s/m] overdamped tissue drag prevents post-cut coasting
 if useExperimentalNodeData
     param.surfaceConstraintMode = experimentalSurfaceConstraintMode;
-    param.projectEdgeForcesToSurface = true;
 else
     param.surfaceConstraintMode = 'ellipsoid';
-    param.projectEdgeForcesToSurface = true;
 end
 
 %% Surface/local edges (shell-only)
@@ -158,14 +193,10 @@ param.k2_edge = kOuter_range(2) * ones(Ne,1);
 param.c_edge  = cOuter_range(1) * ones(Ne,1);
 param.c_series_edge = cOuter_range(2) * ones(Ne,1);
 
-% Passive 1D connection model between cells.
-% Options: 'spring', 'damper', 'maxwell', 'kelvin-voigt', 'zener', 'burgers'.
-% You may also set param.connectionModel_edge to a per-edge cell/string array.
-param.connectionModel = 'maxwell';
-param.connectionModelKey = normalizeConnectionModel(param.connectionModel);
+% You may set param.connectionModel_edge to a per-edge cell/string array.
 param.connectionModelId_edge = connectionModelIds(param, Ne);
 
-%% Spatial localization masks (main-body vs tiny posterior tip)
+%% Spatial localization for alternate tip/seam rupture modes
 edgeMid = 0.5*(nodeCoords(E(:,1),:) + nodeCoords(E(:,2),:) );
 ax = param.postAxis;
 sg = param.postSign;
@@ -174,20 +205,11 @@ param.edgeMid0 = edgeMid;
 sNodes = sg * nodeCoords(:,ax);
 sMid   = sg * edgeMid(:,ax);
 
-param.mainPct = 98.5;      % posterior-most ~1.5% excluded from the main body mask
-param.tipPct  = 98.5;    % posterior-most ~1.5% defines tiny autonomous rupture tip
-
-sCutMain = prctile(sNodes, param.mainPct);
 sCutTip  = prctile(sNodes, param.tipPct);
 
-param.bodyMask = double(sMid < sCutMain);     % main-body edges
 param.tipMask  = double(sMid >= sCutTip);     % tiny posterior cap edges
 
 %% Damage region selection
-param.damageMode = 'principal-0-10-tip-patch';
-param.tipPatchEdgeCount = 12; % compact weak patch; increase for a larger opening
-param.seamWidthFrac = 0.04;   % fraction of posterior-score range
-
 % Compute the same initial long-axis coordinate used by the post-processing
 % plot. Orient its sign by the existing posterior convention so percentile
 % membership is deterministic rather than depending on EIG's arbitrary sign.
@@ -203,11 +225,11 @@ if dot(principalLongAxis, posteriorDirection) < 0
 end
 principalNodeScore = centeredNodes * principalLongAxis;
 principalEdgeScore = mean(principalNodeScore(E), 2);
-principalTipCutoff = prctile(principalNodeScore, 10);
+principalTipCutoff = prctile(principalNodeScore, ...
+    param.principalTipPercentile);
 
 param.principalLongAxis0 = principalLongAxis;
 param.principalNodeScore0 = principalNodeScore;
-param.principalTipPercentile = 10;
 param.principalTipCutoff = principalTipCutoff;
 
 switch lower(param.damageMode)
@@ -261,8 +283,8 @@ switch lower(param.damageMode)
                '"principal-0-10-tip-patch".'], param.damageMode);
 end
 
-fprintf('[MASK] body edges = %d/%d | tip edges = %d | damage edges = %d\n', ...
-    nnz(param.bodyMask), Ne, nnz(param.tipMask), nnz(param.damageMask));
+fprintf('[MASK] tip edges = %d/%d | damage edges = %d\n', ...
+    nnz(param.tipMask), Ne, nnz(param.damageMask));
 if nnz(param.damageMask) == 0
     error('Rupture-region selection produced zero damage edges.');
 end
@@ -288,14 +310,12 @@ end
 % rupture tip toward a softly anchored far-body cap. With the far end held,
 % shortening along this corridor draws each intervening percentile ring
 % away from the tip. Rupture edges themselves never contract.
-param.anchorPercentile = 90;
 param.anchorCutoff = prctile(principalNodeScore, param.anchorPercentile);
 param.anchorNodeMask = double(principalNodeScore >= param.anchorCutoff);
 
 edgeLongAxisSpan = abs(principalNodeScore(E(:,2)) - ...
     principalNodeScore(E(:,1)));
 edgeAxialAlignment = edgeLongAxisSpan ./ max(param.L0_edge0, 1e-18);
-param.contractionMinAxialAlignment = 0.35;
 reachesTowardAnchor = principalEdgeScore <= param.anchorCutoff & ...
     ~(param.anchorNodeMask(E(:,1)) > 0 & param.anchorNodeMask(E(:,2)) > 0);
 param.retractionMask = double(reachesTowardAnchor & ...
@@ -305,30 +325,26 @@ if ~any(param.retractionMask)
     error('No intact axial edges are available for distributed bodyward prestress.');
 end
 
-% Activate shortening from the rupture tip toward the anchored body. Since
-% pairwise shortening alone pulls its two sides toward one another, a matching
-% tip-to-body tangential traction wave supplies the directional bias that
-% keeps every activated ring moving away from the tip.
-param.prestressStartTime = 3;         % [s]
-param.contractionStartTime = param.prestressStartTime;
-param.contractionWaveDuration = 10;   % [s], rupture tip to far body
+% Start shortening everywhere in the axial corridor at the same time. A
+% smooth, load-sensitive adhesion clutch below determines when each node can
+% slide, so the apparent activation sequence is mechanical rather than a
+% prescribed tip-to-body clock. Pairwise shortening alone pulls its two sides
+% together, so global tangential traction supplies the bodyward bias.
+param.contractionRampTime = param.activationRiseTime;
 param.contractionRateFrac_edge = zeros(Ne,1);
-param.contractionRateFrac_edge(param.retractionMask > 0) = 0.005; % [L0/s]
+param.contractionRateFrac_edge(param.retractionMask > 0) = ...
+    param.contractionRateFrac;
 param.minRestLengthFrac_edge = ones(Ne,1);
-param.minRestLengthFrac_edge(param.retractionMask > 0) = 0.93;
+param.minRestLengthFrac_edge(param.retractionMask > 0) = ...
+    param.minRestLengthFrac;
 param.contractionStartTime_edge = inf(Ne,1);
-activeEdgeScore = principalEdgeScore(param.retractionMask > 0);
-activeScoreMin = min(activeEdgeScore);
-activeScoreSpan = max(param.anchorCutoff - activeScoreMin, 1e-18);
-activeBodywardFraction = min(max((activeEdgeScore - activeScoreMin) ./ ...
-    activeScoreSpan, 0), 1);
 param.contractionStartTime_edge(param.retractionMask > 0) = ...
-    param.prestressStartTime + ...
-    activeBodywardFraction * param.contractionWaveDuration;
+    param.prestressStartTime;
 param.contractionDuration_edge = zeros(Ne,1);
 param.contractionDuration_edge(param.retractionMask > 0) = (1 - ...
     param.minRestLengthFrac_edge(param.retractionMask > 0)) ./ ...
-    param.contractionRateFrac_edge(param.retractionMask > 0);
+    param.contractionRateFrac_edge(param.retractionMask > 0) + ...
+    param.contractionRampTime;
 param.prestressDuration = max(param.contractionStartTime_edge(param.retractionMask > 0) + ...
     param.contractionDuration_edge(param.retractionMask > 0)) - ...
     param.prestressStartTime;
@@ -336,25 +352,32 @@ nodeScoreMin = min(principalNodeScore);
 nodeScoreSpan = max(param.anchorCutoff - nodeScoreMin, 1e-18);
 nodeBodywardFraction = min(max((principalNodeScore - nodeScoreMin) ./ ...
     nodeScoreSpan, 0), 1);
-param.activeTraction_on = true;
-param.activeTractionStartTime_node = param.prestressStartTime + ...
-    nodeBodywardFraction * param.contractionWaveDuration;
+param.activeTractionStartTime_node = ...
+    repmat(param.prestressStartTime, N, 1);
 param.activeTractionStartTime_node(param.anchorNodeMask > 0) = inf;
-param.activeTractionDuration = 20;    % [s] per node
-param.activeTractionRampTime = 1;     % [s] smooth force onset/offset
-param.activeTractionForce = 1e-7;     % [N] tangent force away from tip
-param.wavefrontHold_on = true;
-param.wavefrontHoldUntil_node = param.activeTractionStartTime_node + ...
-    param.activeTractionRampTime;
+param.activeTractionDuration = param.prestressDuration; % [s], through contraction
+param.activeTractionRampTime = param.activationRiseTime;
+% Regularized adhesion/friction clutch. At low tangential load, the large
+% viscous coefficient produces near-stick creep. It decreases continuously
+% toward the sliding coefficient across a finite force width; there is no
+% Coulomb sign switch or static/kinetic discontinuity. Adhesion strength rises
+% toward the far body so the mechanically loaded tip is predisposed to release
+% first, but no node is assigned a release time.
+param.adhesionLoadThreshold_node = param.adhesionLoadThresholdTip + ...
+    (param.adhesionLoadThresholdBody - param.adhesionLoadThresholdTip) .* ...
+    nodeBodywardFraction;
+param.adhesionLoadThreshold_node(param.anchorNodeMask > 0) = ...
+    param.adhesionLoadThresholdBody;
 
-param.ruptureDelayAfterWaveArrival = 4; % [s] after wave reaches far body
-param.ruptureEnableTime = param.prestressStartTime + ...
-    param.contractionWaveDuration + param.ruptureDelayAfterWaveArrival;
+% The patch is eligible as soon as global contraction begins; its extension
+% threshold, rather than a later clock, decides the actual rupture time.
+param.ruptureEnableTime = param.prestressStartTime;
 
 % The patch edges are weak and fail when stretched by the retracting tissue;
 % the axial corridor remains intact so it continues drawing the rings back.
 param.extensionCritFrac_edge = inf(Ne,1);
-param.extensionCritFrac_edge(param.damageMask > 0) = 0.05;
+param.extensionCritFrac_edge(param.damageMask > 0) = ...
+    param.extensionCritFrac;
 
 if any(param.contractionRateFrac_edge < 0) || ...
         any(param.minRestLengthFrac_edge <= 0 | param.minRestLengthFrac_edge > 1)
@@ -368,35 +391,30 @@ if useExperimentalNodeData
 else
     param.anchor_on = true;
 end
-param.k_anchor = 10;           % [N/m] positional tether stiffness
-param.c_anchor = 1;            % [N*s/m] anchor damping
-
 fprintf('[ANCHOR] enabled = %d | far-body nodes >= P%d = %d/%d\n', ...
     param.anchor_on, param.anchorPercentile, nnz(param.anchorNodeMask), N);
 
 retractingEdges = find(param.retractionMask > 0);
-fprintf('[PRESTRESS] axial corridor edges = %d | alignment >= %.2f | start = %.3g s | wave = %.3g s tip-to-body | rate = %.3g L0/s | floor = %.3g L0\n', ...
+fprintf('[PRESTRESS] axial corridor edges = %d | alignment >= %.2f | global start = %.3g s | rate = %.3g L0/s | floor = %.3g L0\n', ...
     numel(retractingEdges), param.contractionMinAxialAlignment, ...
-    param.contractionStartTime, param.contractionWaveDuration, ...
+    param.prestressStartTime, ...
     param.contractionRateFrac_edge(retractingEdges(1)), ...
     param.minRestLengthFrac_edge(retractingEdges(1)));
-fprintf('[TRACTION] tip-to-body tangent force = %.3g N/node | duration = %.3g s | ramp = %.3g s\n', ...
+fprintf('[ACTIVATION] global smoothstep rise = %.3g s; spatial release is load-dependent\n', ...
+    param.activationRiseTime);
+fprintf('[TRACTION] global bodyward tangent force = %.3g N/node | duration = %.3g s | ramp = %.3g s\n', ...
     param.activeTractionForce, param.activeTractionDuration, ...
     param.activeTractionRampTime);
-fprintf('[WAVEFRONT HOLD] enabled = %d | no-slip release after %.3g s traction ramp\n', ...
-    param.wavefrontHold_on, param.activeTractionRampTime);
-fprintf(['[PRESTRESS/RUPTURE] corridor shortening duration = %.3g s | rupture enabled = %.3g s | ', ...
+fprintf(['[ADHESION CLUTCH] enabled = %d | threshold tip/body = %.3g/%.3g N | ', ...
+    'transition width = %.3g threshold | drag stuck/sliding = %.3g/%.3g N*s/m\n'], ...
+    param.adhesionClutch_on, param.adhesionLoadThresholdTip, ...
+    param.adhesionLoadThresholdBody, param.adhesionTransitionWidthFrac, ...
+    param.adhesionDragStuck, param.adhesionDragSliding);
+fprintf(['[PRESTRESS/RUPTURE] corridor shortening duration = %.3g s | rupture eligibility = %.3g s | ', ...
     'weak patch edges = %s | break = %.3g L0 extension\n'], ...
     param.prestressDuration, param.ruptureEnableTime, ...
     mat2str(selectedDamageEdge.'), ...
     param.extensionCritFrac_edge(selectedDamageEdge(1)));
-
-%% Damage / rupture parameters
-param.ruptureDamageTau = 0.005; % [s], rapid continuous approximation to a break
-
-% Minimum load-bearing fraction to avoid numerical singularities
-param.g_floor_stiff = 0;        % allow fully failed
-param.g_floor_damp  = 1e-6;     % keep a tiny damping floor
 
 %% Nondimensionalization
 k1_scale = mean(param.k1_edge);
@@ -437,10 +455,10 @@ assert(isscalar(tFinal_dim) && isfinite(tFinal_dim));
 X0_dim = zeros(nX,1);
 
 opts = odeset( ...
-    'RelTol', 1e-5, ...
-    'AbsTol', 1e-8, ...
-    'MaxStep', 5, ...
-    'InitialStep', 1e-3, ...
+    'RelTol', relativeTolerance, ...
+    'AbsTol', absoluteTolerance, ...
+    'MaxStep', maximumSolverStep, ...
+    'InitialStep', initialSolverStep, ...
     'OutputFcn', @(t_dim, y, flag) myProgressOutputFcn(t_dim, y, flag, tau_scale, tFinal_dim, param.progressEveryPhysSec), ...
     'Stats', 'on');
 
@@ -674,9 +692,9 @@ F_active = zeros(N,3);
 if isfield(param, 'activeTraction_on') && param.activeTraction_on
     tractionStart = param.activeTractionStartTime_node(:);
     rampTime = max(param.activeTractionRampTime, 1e-8);
-    rampUp = min(max((t - tractionStart) ./ rampTime, 0), 1);
-    rampDown = min(max((tractionStart + param.activeTractionDuration - t) ./ ...
-        rampTime, 0), 1);
+    rampUp = smoothstep01((t - tractionStart) ./ rampTime);
+    rampDown = smoothstep01((tractionStart + ...
+        param.activeTractionDuration - t) ./ rampTime);
     tractionActivity = rampUp .* rampDown;
 
     bodywardDirection = repmat(param.principalLongAxis0(:).', N, 1);
@@ -692,7 +710,36 @@ if isfield(param, 'activeTraction_on') && param.activeTraction_on
     F_active = param.activeTractionForce .* tractionActivity .* bodywardDirection;
 end
 
-Fnet = Fnet + F_surf + F_dampN + F_drag + F_active;
+% Smooth force-dependent adhesion. The clutch load excludes normal surface
+% reactions and drag, leaving the tangential edge-plus-traction force that is
+% actually trying to move a node. A tanh transition changes the viscous
+% resistance continuously between near-stick and sliding regimes.
+F_adhesion = zeros(N,3);
+if isfield(param, 'adhesionClutch_on') && param.adhesionClutch_on
+    tangentialDrive = Fnet + F_active;
+    tangentVelocity = vMat;
+    if useEllipsoidNormals
+        tangentialDrive = tangentialDrive - ...
+            sum(tangentialDrive .* nSurf, 2) .* nSurf;
+        tangentVelocity = tangentVelocity - ...
+            sum(tangentVelocity .* nSurf, 2) .* nSurf;
+    end
+    loadEpsilon = max(param.adhesionLoadRegularization, 1e-18);
+    tangentialLoad = sqrt(sum(tangentialDrive.^2, 2) + loadEpsilon^2) - ...
+        loadEpsilon;
+    loadThreshold = param.adhesionLoadThreshold_node(:);
+    transitionWidth = max(param.adhesionTransitionWidthFrac .* ...
+        loadThreshold, loadEpsilon);
+    clutchEngagement = 0.5 .* (1 - tanh((tangentialLoad - ...
+        loadThreshold) ./ transitionWidth));
+    adhesionDrag = param.adhesionDragSliding + ...
+        (param.adhesionDragStuck - param.adhesionDragSliding) .* ...
+        clutchEngagement;
+    adhesionDrag(param.anchorNodeMask > 0) = 0;
+    F_adhesion = -adhesionDrag .* tangentVelocity;
+end
+
+Fnet = Fnet + F_surf + F_dampN + F_drag + F_active + F_adhesion;
 
 % Soft anterior positional boundary condition. This weak tether biases
 % directional retraction without rigidly pinning nodes or adding contact.
@@ -706,17 +753,6 @@ dqdt = reshape(vMat.', [], 1);
 
 % dv/dt
 dvdt = reshape((Fnet/param.m).',[],1);
-
-% Before the activation front arrives, basal adhesion holds each free node
-% exactly at its measured position. Traction ramps up during this no-slip
-% phase, then the node releases with an already bodyward-directed load.
-if isfield(param, 'wavefrontHold_on') && param.wavefrontHold_on
-    heldNodes = t < param.wavefrontHoldUntil_node(:) & ...
-        param.anchorNodeMask(:) == 0;
-    heldDofs = reshape(repmat(heldNodes.', 3, 1), [], 1);
-    dqdt(heldDofs) = 0;
-    dvdt(heldDofs) = 0;
-end
 
 % assemble
 dxdt = [dqdt; dvdt; dsigma; dzeta; dD];
@@ -777,19 +813,50 @@ function [Lnatural, LnaturalDot] = contractingNaturalLengths(t, param)
 L0 = param.L0_edge0(:);
 rateFrac = param.contractionRateFrac_edge(:);
 floorFrac = param.minRestLengthFrac_edge(:);
-if isfield(param, 'contractionStartTime_edge')
-    startTime = param.contractionStartTime_edge(:);
-else
-    startTime = param.contractionStartTime;
-end
+startTime = param.contractionStartTime_edge(:);
+riseTime = max(param.contractionRampTime, 1e-8);
+isActiveEdge = rateFrac > 0;
+rawDuration = zeros(size(rateFrac));
+rawDuration(isActiveEdge) = (1 - floorFrac(isActiveEdge)) ./ ...
+    rateFrac(isActiveEdge);
 elapsed = max(t - startTime, 0);
-unclampedFrac = 1 - rateFrac .* elapsed;
-lengthFrac = max(unclampedFrac, floorFrac);
-Lnatural = L0 .* lengthFrac;
+effectiveElapsed = zeros(size(rateFrac));
+rateActivation = zeros(size(rateFrac));
 
-isShortening = (t >= startTime) & ...
-    (rateFrac > 0) & (unclampedFrac > floorFrac);
-LnaturalDot = -L0 .* rateFrac .* isShortening;
+isRampUp = isActiveEdge & elapsed < riseTime;
+if any(isRampUp)
+    rampCoordinate = elapsed(isRampUp) ./ riseTime;
+    rampIntegral = rampCoordinate.^3 - 0.5 * rampCoordinate.^4;
+    effectiveElapsed(isRampUp) = riseTime .* rampIntegral;
+    rateActivation(isRampUp) = smoothstep01(rampCoordinate);
+end
+
+isPlateau = isActiveEdge & elapsed >= riseTime & elapsed <= rawDuration;
+effectiveElapsed(isPlateau) = elapsed(isPlateau) - 0.5 * riseTime;
+rateActivation(isPlateau) = 1;
+
+isRampDown = isActiveEdge & elapsed > rawDuration & ...
+    elapsed < rawDuration + riseTime;
+if any(isRampDown)
+    rampCoordinate = (elapsed(isRampDown) - rawDuration(isRampDown)) ./ riseTime;
+    rampIntegral = rampCoordinate.^3 - 0.5 * rampCoordinate.^4;
+    effectiveElapsed(isRampDown) = rawDuration(isRampDown) - ...
+        0.5 * riseTime + riseTime .* (rampCoordinate - rampIntegral);
+    rateActivation(isRampDown) = 1 - smoothstep01(rampCoordinate);
+end
+
+isComplete = isActiveEdge & elapsed >= rawDuration + riseTime;
+effectiveElapsed(isComplete) = rawDuration(isComplete);
+
+lengthFrac = max(1 - rateFrac .* effectiveElapsed, floorFrac);
+Lnatural = L0 .* lengthFrac;
+LnaturalDot = -L0 .* rateFrac .* rateActivation;
+end
+
+
+function value = smoothstep01(coordinate)
+coordinate = min(max(coordinate, 0), 1);
+value = coordinate.^2 .* (3 - 2 * coordinate);
 end
 
 
@@ -816,7 +883,8 @@ if isfield(param, 'connectionModel_edge') && ~isempty(param.connectionModel_edge
     return;
 end
 
-modelIds = connectionModelId(param.connectionModelKey) * ones(Ne,1);
+modelKey = normalizeConnectionModel(param.connectionModel);
+modelIds = connectionModelId(modelKey) * ones(Ne,1);
 end
 
 
