@@ -56,7 +56,8 @@ frameCount = min(numel(frameCandidates), max(2, round(opts.targetFrames)));
 framePositions = unique(round(linspace(1, numel(frameCandidates), frameCount)));
 frameIndices = frameCandidates(framePositions);
 
-[pcaBasis, center0, tipNodeMask] = initialPrincipalCoordinates(nodeCoords, S);
+[pcaBasis, center0, bandMasks, percentileRanges] = ...
+    initialPrincipalCoordinates(nodeCoords, S);
 if isfield(S, 'param') && isfield(S.param, 'damageMask')
     ruptureEdges = find(S.param.damageMask(:) > 0);
 elseif isfield(S, 'D_time')
@@ -93,7 +94,7 @@ writerIsOpen = false;
 colors.edges = [0.68 0.70 0.74];
 colors.rupture = [0.75 0.00 0.75];
 colors.otherNodes = [0.55 0.57 0.61];
-colors.tipNodes = [0.88 0.20 0.18];
+colors.rings = [0.88 0.20 0.18; 0.20 0.62 0.30; 0.20 0.42 0.88];
 
 hold(ax, 'on');
 intactEdgePlot = plot3(ax, nan, nan, nan, '-', 'Color', colors.edges, ...
@@ -101,13 +102,19 @@ intactEdgePlot = plot3(ax, nan, nan, nan, '-', 'Color', colors.edges, ...
 ruptureEdgePlot = plot3(ax, nan, nan, nan, '-', 'Color', colors.rupture, ...
     'LineWidth', 2.6, 'HandleVisibility', 'off');
 otherNodePlot = scatter3(ax, nan, nan, nan, 18, colors.otherNodes, ...
-    'filled', 'MarkerEdgeColor', 'none');
-tipNodePlot = scatter3(ax, nan, nan, nan, 30, colors.tipNodes, ...
-    'filled', 'MarkerEdgeColor', [0.15 0.15 0.15], 'LineWidth', 0.25);
+    'filled', 'MarkerEdgeColor', 'none', 'HandleVisibility', 'off');
+ringNodePlots = gobjects(size(bandMasks,2), 1);
+for bandIdx = 1:size(bandMasks,2)
+    ringNodePlots(bandIdx) = scatter3(ax, nan, nan, nan, 34, ...
+        colors.rings(bandIdx,:), 'filled', ...
+        'MarkerEdgeColor', [0.15 0.15 0.15], 'LineWidth', 0.25, ...
+        'DisplayName', sprintf('%g-%g percentile', ...
+        percentileRanges(bandIdx,1), percentileRanges(bandIdx,2)));
+end
 failedNodePlot = scatter3(ax, nan, nan, nan, 90, colors.rupture, ...
-    'o', 'LineWidth', 1.8);
+    'o', 'LineWidth', 1.8, 'HandleVisibility', 'off');
 failedMidpointPlot = scatter3(ax, nan, nan, nan, 120, colors.rupture, ...
-    'x', 'LineWidth', 2.4);
+    'x', 'LineWidth', 2.4, 'HandleVisibility', 'off');
 
 xlim(ax, plotLimits(1,:));
 ylim(ax, plotLimits(2,:));
@@ -121,6 +128,7 @@ xlabel(ax, sprintf('Principal long axis (%s)', displayUnit));
 ylabel(ax, sprintf('PC2 (%s)', displayUnit));
 zlabel(ax, sprintf('PC3 (%s)', displayUnit));
 titleHandle = title(ax, '', 'Interpreter', 'none');
+legend(ax, ringNodePlots, 'Location', 'northeast');
 
 try
     open(writer);
@@ -144,10 +152,14 @@ try
         set(intactEdgePlot, 'XData', edgeX, 'YData', edgeY, 'ZData', edgeZ);
         [edgeX, edgeY, edgeZ] = videoEdgeCoordinates(P, edgeList, selectedIntact);
         set(ruptureEdgePlot, 'XData', edgeX, 'YData', edgeY, 'ZData', edgeZ);
-        set(otherNodePlot, 'XData', P(~tipNodeMask,1), ...
-            'YData', P(~tipNodeMask,2), 'ZData', P(~tipNodeMask,3));
-        set(tipNodePlot, 'XData', P(tipNodeMask,1), ...
-            'YData', P(tipNodeMask,2), 'ZData', P(tipNodeMask,3));
+        otherNodeMask = ~any(bandMasks, 2);
+        set(otherNodePlot, 'XData', P(otherNodeMask,1), ...
+            'YData', P(otherNodeMask,2), 'ZData', P(otherNodeMask,3));
+        for bandIdx = 1:size(bandMasks,2)
+            bandMask = bandMasks(:,bandIdx);
+            set(ringNodePlots(bandIdx), 'XData', P(bandMask,1), ...
+                'YData', P(bandMask,2), 'ZData', P(bandMask,3));
+        end
 
         if ~isempty(selectedFailed)
             failedNodes = unique(edgeList(selectedFailed,:));
@@ -166,7 +178,7 @@ try
             'rupture edges failed = %d/%d'], tSol(k), numel(selectedFailed), ...
             numel(ruptureEdges));
         drawnow;
-        writeVideo(writer, getframe(ax));
+        writeVideo(writer, getframe(fig));
     end
     close(writer);
     writerIsOpen = false;
@@ -188,7 +200,9 @@ info.frameTimes = tSol(frameIndices);
 info.frameRate = opts.fps;
 info.duration = numel(frameIndices) / opts.fps;
 info.ruptureEdges = ruptureEdges;
-info.tipNodeMask = tipNodeMask;
+info.percentileRanges = percentileRanges;
+info.bandMasks = bandMasks;
+info.tipNodeMask = bandMasks(:,1);
 fprintf('Saved rupture video: %s (%d frames, %.2f s)\n', ...
     outFile, numel(frameIndices), info.duration);
 end
@@ -218,7 +232,8 @@ end
 end
 
 
-function [pcaBasis, center0, tipNodeMask] = initialPrincipalCoordinates(nodeCoords, S)
+function [pcaBasis, center0, bandMasks, percentileRanges] = ...
+        initialPrincipalCoordinates(nodeCoords, S)
 N = size(nodeCoords, 1);
 center0 = mean(nodeCoords, 1);
 centered0 = nodeCoords - center0;
@@ -242,8 +257,14 @@ secondAxis = secondAxis / norm(secondAxis);
 pcaBasis = [longAxis, secondAxis, thirdAxis];
 
 longScore = centered0 * longAxis;
-tipCutoff = prctile(longScore, 10);
-tipNodeMask = longScore <= tipCutoff;
+percentileRanges = [0 10; 25 35; 45 55];
+percentileEdges = prctile(longScore, reshape(percentileRanges.', 1, []));
+bandMasks = false(N, size(percentileRanges,1));
+for bandIdx = 1:size(percentileRanges,1)
+    lowerEdge = percentileEdges(2*bandIdx - 1);
+    upperEdge = percentileEdges(2*bandIdx);
+    bandMasks(:,bandIdx) = longScore >= lowerEdge & longScore <= upperEdge;
+end
 end
 
 

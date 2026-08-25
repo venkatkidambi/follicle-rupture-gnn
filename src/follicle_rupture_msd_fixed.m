@@ -50,15 +50,15 @@ param.damageMode = 'principal-0-10-tip-patch';
 param.tipPct = 98.5;                % used by the alternate 'tip'/'seam' modes
 param.seamWidthFrac = 0.04;         % used by the alternate 'seam' mode
 param.principalTipPercentile = 10;
-param.tipPatchEdgeCount = 12;
+param.tipPatchEdgeCount = 22;
 
 % Distributed contraction and directional traction
 param.anchorPercentile = 90;
 param.contractionMinAxialAlignment = 0.35;
 param.prestressStartTime = 3;       % [s]
-param.activationRiseTime = 1200;     % [s], prolonged global slow-pull onset
-param.contractionRateFrac = 1e-4;   % [L0/s], reaches 5% shortening in 500 s
-param.minRestLengthFrac = 0.70;     % store strain, then hold the shortened target
+param.activationRiseTime = 900;     % [s], prolonged global slow-pull onset
+param.contractionRateFrac = 4e-4;   % [L0/s], reaches 5% shortening in 500 s
+param.minRestLengthFrac = 0.50;     % store strain, then hold the shortened target
 param.activeTraction_on = false;    % post-rupture motion comes from stored energy
 param.activeTractionForce = 1e-7;   % [N/node], away from the rupture tip
 
