@@ -105,18 +105,19 @@ The ODE state is:
 - `v`: node velocity
 - `sigma`, `zeta`: viscoelastic edge states
 - `D`: edge damage from `0` (intact) to `1` (failed)
+- `A`: irreversible node-adhesion release from `0` (attached) to `1` (detached)
 
 The selected weak edge patch lies at the extreme of the principal-axis 0-10%
 tip. Predominantly axial, intact edges from the tip toward the 90th-percentile
-far-body cap begin contracting together with a smooth global ramp. A continuous,
-load-sensitive adhesion clutch supplies strong tangential drag at low load and
-smoothly weakens toward a sliding-drag value as local force builds. Adhesion is
-weaker near the tip and stronger toward the far body, so release can propagate
-bodyward through force transmission without assigning rings activation times or
-introducing a static/kinetic friction jump. The far-body cap remains softly
-anchored. Weak patch edges become eligible to fail when contraction begins, but
-their extension threshold decides when they actually rupture. The rupture edges
-do not contract. Both endpoints of a
+far-body cap begin contracting together with one smooth global ramp; there is no
+spatial activation schedule. Zener linkages retain elastic stress during this
+slow pull, while elastic reference-position adhesion tethers suppress bulk
+motion. Active traction is disabled. When one weak edge reaches its extension
+threshold, the selected local patch opens and unlocks irreversible,
+load-dependent adhesion release. The lower tip threshold and load redistribution
+then produce bodyward release through the mechanically coupled network. The
+far-body cap remains softly anchored. The rupture edges do not contract. Both
+endpoints of a
 rupture edge must belong to the initial 0-10% node band; among those candidates,
 the twelve edges nearest the tip are selected. Other edges are effectively
 unbreakable.
@@ -129,21 +130,25 @@ derived from these scalar settings later in the script:
 param.prestressStartTime = 3;         % seconds
 param.anchorPercentile = 90;          % softly anchored far-body cap
 param.contractionMinAxialAlignment = 0.35;
-param.activationRiseTime = 5;         % global smoothstep rise, seconds
-param.contractionRateFrac = 0.001;   % original edge lengths/second
-param.minRestLengthFrac = 0.40;
-param.activeTractionForce = 1e-7;     % tangential bodyward force, N/node
-param.adhesionLoadThresholdTip = 5e-8;    % lower tip release load, N
-param.adhesionLoadThresholdBody = 1.5e-7; % higher body release load, N
+param.activationRiseTime = 150;       % global slow-pull onset, seconds
+param.contractionRateFrac = 1e-4;     % original edge lengths/second
+param.minRestLengthFrac = 0.95;       % retain a 5% shortened target
+param.activeTraction_on = false;      % recoil uses stored elastic energy
+param.adhesionStiffness = 1;          % reference-position tether, N/m
+param.adhesionLoadThresholdTip = 5e-7;    % lower tip release load, N
+param.adhesionLoadThresholdBody = 3e-6;   % higher body release load, N
 param.adhesionTransitionWidthFrac = 0.25; % smooth force-transition width
-param.adhesionDragStuck = 10;             % near-stick drag, N*s/m
-param.adhesionDragSliding = 0.05;         % released drag, N*s/m
+param.adhesionReleaseTau = 5;              % irreversible release time, seconds
+param.adhesionDragStuck = 1;               % attached damping, N*s/m
+param.adhesionDragSliding = 0.5;           % detached drag, N*s/m
 param.extensionCritFrac = 0.05;      % rupture-patch extension threshold
+param.rupturePatchCascade_on = true; % first break opens the selected patch
 ```
 
 Saved output includes `Lnatural_time`, the natural length of every edge at
-every saved time, in addition to displacement `Y`, velocity `V`, and damage
-`D_time`. After simulation, `run_simulation` opens a node-position snapshot
+every saved time, in addition to displacement `Y`, velocity `V`, edge damage
+`D_time`, and node adhesion release `A_time`. After simulation,
+`run_simulation` opens a node-position snapshot
 figure and a second figure showing signed long-axis displacement and velocity
 for the initial 0-10%, 25-35%, and 45-55% principal-axis rings. Positive values
 indicate motion away from the rupture tip.

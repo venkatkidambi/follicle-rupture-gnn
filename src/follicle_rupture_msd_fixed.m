@@ -1,9 +1,10 @@
 function follicle_rupture_msd_fixed
 % Follicle rupture shell model
-% State: X = [q; v; sigma; zeta; D]
+% State: X = [q; v; sigma; zeta; D; A]
 %   q, v        node displacement and velocity
 %   sigma,zeta  viscoelastic edge states
 %   D           edge damage in [0,1], where 1 means failed
+%   A           node adhesion release in [0,1], where 1 means detached
 
 clc; close all;
 
@@ -34,9 +35,9 @@ experimentalNeighborCount = 6;         % local neighbors per measured node for '
 
 % Passive mechanics and surface coupling
 mVal = 1;                           % [kg]
-kOuter_range = [1, 1];              % [N/m], two passive spring branches
-cOuter_range = [1, 1];              % [N*s/m], two passive damping branches
-param.connectionModel = 'maxwell';  % spring, damper, maxwell, kelvin-voigt, zener, burgers
+kOuter_range = [2, 2];              % [N/m], equilibrium and transient springs
+cOuter_range = [100, 100];          % [N*s/m], retain stress during the slow pull
+param.connectionModel = 'zener';    % persistent spring plus relaxing Maxwell branch
 param.postAxis = 1;
 param.postSign = 1;                  % tracked-node rupture tip convention
 param.k_surf = 5e-6;                % [N] surface penalty strength
@@ -55,35 +56,39 @@ param.tipPatchEdgeCount = 12;
 param.anchorPercentile = 90;
 param.contractionMinAxialAlignment = 0.35;
 param.prestressStartTime = 3;       % [s]
-param.activationRiseTime = 5;       % [s]
-param.contractionRateFrac = 0.001;  % [L0/s]
-param.minRestLengthFrac = 0.80;     % final fraction of initial edge length
-param.activeTraction_on = true;
+param.activationRiseTime = 1200;     % [s], prolonged global slow-pull onset
+param.contractionRateFrac = 1e-4;   % [L0/s], reaches 5% shortening in 500 s
+param.minRestLengthFrac = 0.70;     % store strain, then hold the shortened target
+param.activeTraction_on = false;    % post-rupture motion comes from stored energy
 param.activeTractionForce = 1e-7;   % [N/node], away from the rupture tip
 
-% Smooth load-dependent adhesion clutch
+% Rupture-gated elastic adhesion clutch
 param.adhesionClutch_on = true;
-param.adhesionLoadThresholdTip = 5e-8;     % [N]
-param.adhesionLoadThresholdBody = 1.5e-7;  % [N] at the P90 anchor boundary
-param.adhesionTransitionWidthFrac = 1;
-param.adhesionDragStuck = 0.05;              % [N*s/m]
-param.adhesionDragSliding = 0.05;          % [N*s/m]
+param.adhesionStiffness = 1;               % [N/m], reference-position tether
+param.adhesionLoadThresholdTip = 5e-7;     % [N], tip releases most readily
+param.adhesionLoadThresholdBody = 3e-6;    % [N] at the P90 anchor boundary
+param.adhesionTransitionWidthFrac = 0.25;
+param.adhesionReleaseTau = 5;              % [s], irreversible detachment time
+param.adhesionRuptureGateDamage = 0.5;     % release starts only after rupture
+param.adhesionDragStuck = 0.05;               % [N*s/m]
+param.adhesionDragSliding = 0.01;           % [N*s/m]
 param.adhesionLoadRegularization = 1e-12;  % [N]
 
 % Far-body anchor and rupture law
 param.k_anchor = 10;                % [N/m]
 param.c_anchor = 1;                 % [N*s/m]
 param.extensionCritFrac = 0.05;     % [L0] weak-edge extension to rupture
-param.ruptureDamageTau = 0.005;     % [s] continuous break timescale
+param.rupturePatchCascade_on = true; % first weak-edge break opens the local patch
+param.ruptureDamageTau = 0.5;       % [s], fast relative to tissue relaxation
 param.g_floor_stiff = 0;            % residual stiffness after failure
 param.g_floor_damp = 1e-6;          % residual damping after failure
 
 % Time integration and saved output
 tEnd = 1800;                       % [s]
 numSave = 300;                     % frames after the dense rupture window
-ruptureSaveEnd = 120;              % [s]
-ruptureSaveInterval = 0.25;        % [s]
-odeSolver = 'ode45';               % ode45, ode15s, or ode23t
+ruptureSaveEnd = 900;              % [s], includes slow preload and recoil onset
+ruptureSaveInterval = 1;           % [s]
+odeSolver = 'ode45';               % vectorized explicit solve; rupture remains resolved
 relativeTolerance = 1e-5;
 absoluteTolerance = 1e-8;
 maximumSolverStep = 5;
@@ -357,12 +362,9 @@ param.activeTractionStartTime_node = ...
 param.activeTractionStartTime_node(param.anchorNodeMask > 0) = inf;
 param.activeTractionDuration = param.prestressDuration; % [s], through contraction
 param.activeTractionRampTime = param.activationRiseTime;
-% Regularized adhesion/friction clutch. At low tangential load, the large
-% viscous coefficient produces near-stick creep. It decreases continuously
-% toward the sliding coefficient across a finite force width; there is no
-% Coulomb sign switch or static/kinetic discontinuity. Adhesion strength rises
-% toward the far body so the mechanically loaded tip is predisposed to release
-% first, but no node is assigned a release time.
+% Adhesion release thresholds rise toward the far body. Every node begins with
+% an elastic reference-position tether, and no tether may release until the
+% weak patch ruptures. Subsequent detachment is driven only by local load.
 param.adhesionLoadThreshold_node = param.adhesionLoadThresholdTip + ...
     (param.adhesionLoadThresholdBody - param.adhesionLoadThresholdTip) .* ...
     nodeBodywardFraction;
@@ -383,6 +385,11 @@ if any(param.contractionRateFrac_edge < 0) || ...
         any(param.minRestLengthFrac_edge <= 0 | param.minRestLengthFrac_edge > 1)
     error('Contraction rates must be nonnegative and rest-length floors must lie in (0,1].');
 end
+if param.adhesionStiffness < 0 || param.adhesionReleaseTau <= 0 || ...
+        param.adhesionLoadThresholdTip <= 0 || ...
+        param.adhesionLoadThresholdBody <= 0
+    error('Adhesion stiffness must be nonnegative; release time and load thresholds must be positive.');
+end
 
 % Soft far-body anchoring provides the directional reference for the
 % distributed contraction. It is a positional tether, not a rigid pin.
@@ -400,16 +407,18 @@ fprintf('[PRESTRESS] axial corridor edges = %d | alignment >= %.2f | global star
     param.prestressStartTime, ...
     param.contractionRateFrac_edge(retractingEdges(1)), ...
     param.minRestLengthFrac_edge(retractingEdges(1)));
-fprintf('[ACTIVATION] global smoothstep rise = %.3g s; spatial release is load-dependent\n', ...
+fprintf('[PRELOAD] global smoothstep rise = %.3g s; no spatial activation schedule\n', ...
     param.activationRiseTime);
-fprintf('[TRACTION] global bodyward tangent force = %.3g N/node | duration = %.3g s | ramp = %.3g s\n', ...
-    param.activeTractionForce, param.activeTractionDuration, ...
+fprintf('[TRACTION] enabled = %d | force = %.3g N/node | duration = %.3g s | ramp = %.3g s\n', ...
+    param.activeTraction_on, param.activeTractionForce, param.activeTractionDuration, ...
     param.activeTractionRampTime);
-fprintf(['[ADHESION CLUTCH] enabled = %d | threshold tip/body = %.3g/%.3g N | ', ...
-    'transition width = %.3g threshold | drag stuck/sliding = %.3g/%.3g N*s/m\n'], ...
-    param.adhesionClutch_on, param.adhesionLoadThresholdTip, ...
+fprintf(['[ADHESION CLUTCH] enabled = %d | stiffness = %.3g N/m | ', ...
+    'threshold tip/body = %.3g/%.3g N | transition = %.3g threshold | ', ...
+    'release tau = %.3g s | ', ...
+    'drag stuck/sliding = %.3g/%.3g N*s/m\n'], ...
+    param.adhesionClutch_on, param.adhesionStiffness, param.adhesionLoadThresholdTip, ...
     param.adhesionLoadThresholdBody, param.adhesionTransitionWidthFrac, ...
-    param.adhesionDragStuck, param.adhesionDragSliding);
+    param.adhesionReleaseTau, param.adhesionDragStuck, param.adhesionDragSliding);
 fprintf(['[PRESTRESS/RUPTURE] corridor shortening duration = %.3g s | rupture eligibility = %.3g s | ', ...
     'weak patch edges = %s | break = %.3g L0 extension\n'], ...
     param.prestressDuration, param.ruptureEnableTime, ...
@@ -437,16 +446,20 @@ param.progressEveryPhysSec = progressEveryPhysSec;
 %% ================= State sizes =================
 nPos = 3*N;
 nVel = 3*N;
+nAdhesion = N;
 
 param.nPos = nPos;
 param.nVel = nVel;
+param.nAdhesion = nAdhesion;
 
-% X = [q; v; sigma; zeta; D]
-nX = nPos + nVel + Ne + Ne + Ne;
+% X = [q; v; sigma; zeta; D; A]
+nX = nPos + nVel + Ne + Ne + Ne + nAdhesion;
 
-% Edge state block indices for extracting saved time courses
+% Damage and adhesion-state block indices for saved time courses
 iD1 = nPos + nVel + 2*Ne + 1;
 iD2 = iD1 + Ne - 1;
+iA1 = iD2 + 1;
+iA2 = iA1 + nAdhesion - 1;
 
 %% Integrate
 tFinal_dim = tEnd / tau_scale;
@@ -457,8 +470,8 @@ X0_dim = zeros(nX,1);
 opts = odeset( ...
     'RelTol', relativeTolerance, ...
     'AbsTol', absoluteTolerance, ...
-    'MaxStep', maximumSolverStep, ...
-    'InitialStep', initialSolverStep, ...
+    'MaxStep', maximumSolverStep / tau_scale, ...
+    'InitialStep', initialSolverStep / tau_scale, ...
     'OutputFcn', @(t_dim, y, flag) myProgressOutputFcn(t_dim, y, flag, tau_scale, tFinal_dim, param.progressEveryPhysSec), ...
     'Stats', 'on');
 
@@ -493,6 +506,7 @@ L0_edge0 = param.L0_edge0;
 
 % extract edge state time courses
 D_time = min(max(XDimQ_all(:, iD1:iD2), 0), 1);
+A_time = min(max(XDimQ_all(:, iA1:iA2), 0), 1);
 
 % Save the imposed natural-length history alongside displacement/damage so
 % rupture can be checked directly in post-processing.
@@ -502,7 +516,8 @@ for it = 1:numel(tSol)
 end
 
 save(simFile, ...
-     'nodeCoords','edgeList','L0_edge0','Lnatural_time','tSol','Y','V','D_time','param','-v7.3');
+     'nodeCoords','edgeList','L0_edge0','Lnatural_time','tSol','Y','V', ...
+     'D_time','A_time','param','-v7.3');
 
 end % main
 
@@ -512,6 +527,7 @@ function dXdim = nondimRHS_shell(t_dim, X_dim, param)
 nPos = param.nPos;
 nVel = param.nVel;
 Ne   = param.Ne;
+N    = param.N;
 scale = param.scale;
 
 % indices in ND vector
@@ -520,12 +536,14 @@ iV2  = iQ2 + nVel;
 iS2  = iV2 + Ne;
 iZ2  = iS2 + Ne;
 iD2  = iZ2 + Ne;
+iA2  = iD2 + N;
 
 q_dim   = X_dim(1:iQ2);
 v_dim   = X_dim(iQ2+1:iV2);
 sig_dim = X_dim(iV2+1:iS2);
 zet_dim = X_dim(iS2+1:iZ2);
 D_dim   = X_dim(iZ2+1:iD2);
+A_dim   = X_dim(iD2+1:iA2);
 
 % to physical
 q_phys   = q_dim * scale.L;
@@ -533,9 +551,11 @@ v_phys   = v_dim * (scale.L/scale.tau);
 sig_phys = sig_dim * (scale.k2*scale.L);
 zet_phys = zet_dim * scale.L;
 D_phys   = D_dim;
+A_phys   = A_dim;
 t_phys   = t_dim * scale.tau;
 
-dX_phys = ShellRHS_physical(t_phys, [q_phys; v_phys; sig_phys; zet_phys; D_phys], param);
+dX_phys = ShellRHS_physical(t_phys, ...
+    [q_phys; v_phys; sig_phys; zet_phys; D_phys; A_phys], param);
 
 % back to ND
 dqdt_dim   = (dX_phys(1:nPos)/scale.L) * scale.tau;
@@ -546,14 +566,15 @@ dzet_dim   = (dX_phys(nPos+nVel+Ne+1 : nPos+nVel+2*Ne) / scale.L) * scale.tau;
 
 off = nPos + nVel + 2*Ne;
 dD_dim     = dX_phys(off+(1:Ne)) * scale.tau;
+dA_dim     = dX_phys(off+Ne+(1:N)) * scale.tau;
 
-dXdim = [dqdt_dim; dvdt_dim; dsig_dim; dzet_dim; dD_dim];
+dXdim = [dqdt_dim; dvdt_dim; dsig_dim; dzet_dim; dD_dim; dA_dim];
 end
 
 
 %% ========================= PHYSICAL RHS =========================
 function dxdt = ShellRHS_physical(t, x, param)
-% X = [ q(3N); v(3N); sigma(Ne); zeta(Ne); D(Ne) ]
+% X = [ q(3N); v(3N); sigma(Ne); zeta(Ne); D(Ne); A(N) ]
 
 N    = param.N;
 nPos = param.nPos;
@@ -566,15 +587,18 @@ iV1 = iQ2+1;             iV2 = iV1 + nVel - 1;
 iS1 = iV2+1;             iS2 = iS1 + Ne - 1;
 iZ1 = iS2+1;             iZ2 = iZ1 + Ne - 1;
 iD1 = iZ2+1;             iD2 = iD1 + Ne - 1;
+iA1 = iD2+1;             iA2 = iA1 + N - 1;
 
 q     = x(iQ1:iQ2);
 v     = x(iV1:iV2);
 sigma = x(iS1:iS2);
 zeta  = x(iZ1:iZ2);
 D     = x(iD1:iD2);
+A     = x(iA1:iA2);
 
-% clamp bounded edge states safely
+% Clamp bounded damage/release states safely.
 D = min(max(D,0),1);
+A = min(max(A,0),1);
 
 qMat = reshape(q,3,[])';
 vMat = reshape(v,3,[])';
@@ -666,8 +690,15 @@ dD = zeros(Ne,1);
 criticalExtension = param.extensionCritFrac_edge(:) .* L0_ref;
 ruptureEnabled = ~isfield(param, 'ruptureEnableTime') || ...
     t >= param.ruptureEnableTime;
-breaking = ruptureEnabled & (param.damageMask(:) > 0) & ...
+thresholdBreaking = ruptureEnabled & (param.damageMask(:) > 0) & ...
     (stretch >= criticalExtension);
+breaking = thresholdBreaking;
+if isfield(param, 'rupturePatchCascade_on') && param.rupturePatchCascade_on
+    patchAlreadyBreaking = any(D(param.damageMask(:) > 0) > 0);
+    if patchAlreadyBreaking || any(thresholdBreaking)
+        breaking = ruptureEnabled & (param.damageMask(:) > 0);
+    end
+end
 if any(breaking)
     tauBreak = max(param.ruptureDamageTau, 1e-8);
     dD(breaking) = (1 - D(breaking)) ./ tauBreak;
@@ -710,33 +741,55 @@ if isfield(param, 'activeTraction_on') && param.activeTraction_on
     F_active = param.activeTractionForce .* tractionActivity .* bodywardDirection;
 end
 
-% Smooth force-dependent adhesion. The clutch load excludes normal surface
-% reactions and drag, leaving the tangential edge-plus-traction force that is
-% actually trying to move a node. A tanh transition changes the viscous
-% resistance continuously between near-stick and sliding regimes.
+% Elastic adhesion stores the global preload instead of merely slowing it.
+% The clutch cannot detach before a selected weak edge actually ruptures.
+% After rupture, its local stored load drives irreversible, threshold-dependent
+% release; the tip-to-body threshold gradient can then produce sequential ring
+% motion without assigning any node an activation time.
 F_adhesion = zeros(N,3);
+dA = zeros(N,1);
 if isfield(param, 'adhesionClutch_on') && param.adhesionClutch_on
-    tangentialDrive = Fnet + F_active;
+    tangentDisplacement = qMat;
     tangentVelocity = vMat;
     if useEllipsoidNormals
-        tangentialDrive = tangentialDrive - ...
-            sum(tangentialDrive .* nSurf, 2) .* nSurf;
+        tangentDisplacement = tangentDisplacement - ...
+            sum(tangentDisplacement .* nSurf, 2) .* nSurf;
         tangentVelocity = tangentVelocity - ...
             sum(tangentVelocity .* nSurf, 2) .* nSurf;
     end
+
+    elasticClutchForce = -param.adhesionStiffness .* tangentDisplacement;
+    trialClutchForce = elasticClutchForce - ...
+        param.adhesionDragStuck .* tangentVelocity;
     loadEpsilon = max(param.adhesionLoadRegularization, 1e-18);
-    tangentialLoad = sqrt(sum(tangentialDrive.^2, 2) + loadEpsilon^2) - ...
+    clutchLoad = sqrt(sum(trialClutchForce.^2, 2) + loadEpsilon^2) - ...
         loadEpsilon;
     loadThreshold = param.adhesionLoadThreshold_node(:);
     transitionWidth = max(param.adhesionTransitionWidthFrac .* ...
         loadThreshold, loadEpsilon);
-    clutchEngagement = 0.5 .* (1 - tanh((tangentialLoad - ...
+    overloadActivity = 0.5 .* (1 + tanh((clutchLoad - ...
         loadThreshold) ./ transitionWidth));
-    adhesionDrag = param.adhesionDragSliding + ...
-        (param.adhesionDragStuck - param.adhesionDragSliding) .* ...
-        clutchEngagement;
+
+    selectedDamage = D(param.damageMask(:) > 0);
+    if isempty(selectedDamage)
+        ruptureDamage = 0;
+    else
+        ruptureDamage = max(selectedDamage);
+    end
+    gateStart = min(max(param.adhesionRuptureGateDamage, 0), 1 - 1e-8);
+    ruptureGate = smoothstep01((ruptureDamage - gateStart) ./ ...
+        max(1 - gateStart, 1e-8));
+    dA = ruptureGate .* overloadActivity .* (1 - A) ./ ...
+        max(param.adhesionReleaseTau, 1e-8);
+    dA(param.anchorNodeMask > 0) = 0;
+
+    clutchEngagement = 1 - A;
+    adhesionDrag = clutchEngagement .* param.adhesionDragStuck + ...
+        A .* param.adhesionDragSliding;
+    clutchEngagement(param.anchorNodeMask > 0) = 0;
     adhesionDrag(param.anchorNodeMask > 0) = 0;
-    F_adhesion = -adhesionDrag .* tangentVelocity;
+    F_adhesion = clutchEngagement .* elasticClutchForce - ...
+        adhesionDrag .* tangentVelocity;
 end
 
 Fnet = Fnet + F_surf + F_dampN + F_drag + F_active + F_adhesion;
@@ -755,7 +808,7 @@ dqdt = reshape(vMat.', [], 1);
 dvdt = reshape((Fnet/param.m).',[],1);
 
 % assemble
-dxdt = [dqdt; dvdt; dsigma; dzeta; dD];
+dxdt = [dqdt; dvdt; dsigma; dzeta; dD; dA];
 end
 
 
