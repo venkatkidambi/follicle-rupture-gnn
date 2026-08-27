@@ -7,6 +7,8 @@ simFile = fullfile(repoRoot, 'results', 'follicleShellSim_test2.mat');
 [snapshotFigure, ~] = plot_node_position_snapshots(simFile);
 [velocityFigure, ~] = plot_percentile_ring_velocity(simFile);
 
+snapshotFigure.Units = 'inches';
+snapshotFigure.Position(3:4) = [16, 6.5];
 exportgraphics(snapshotFigure, ...
     fullfile(repoRoot, 'results', 'node_position_snapshots.png'), ...
     'Resolution', 300);

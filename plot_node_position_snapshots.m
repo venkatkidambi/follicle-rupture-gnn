@@ -157,7 +157,7 @@ for panelIdx = 1:3
     selectedIntact = ruptureEdges(~failedEdges(ruptureEdges));
     if ~isempty(selectedIntact)
         plotEdgeSegments(ax, P, edgeList(selectedIntact,:), ...
-            colors.rupture, 3.0, 'Edge selected to rupture');
+            colors.rupture, 3.0, 'Weak (rupture) edge');
     end
 
     selectedFailed = ruptureEdges(failedEdges(ruptureEdges));
