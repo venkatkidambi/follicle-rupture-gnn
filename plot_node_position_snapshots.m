@@ -54,6 +54,7 @@ end
 
 frameIdx = [1, round((numel(tSol) + 1)/2), numel(tSol)];
 frameNames = {'Beginning', 'Middle', 'End'};
+panelLabels = {'(a)', '(b)', '(c)', '(d)', '(e)', '(f)'};
 
 % Establish a right-handed PCA basis from the undeformed node cloud. This
 % uses EIG rather than PCA, so the Statistics Toolbox is not required.
@@ -172,8 +173,8 @@ for panelIdx = 1:3
 
     drawLongAxis(ax, P(validMask,:));
     formatSnapshotAxes(ax, plotMin, plotMax, displayUnit);
-    title(ax, sprintf('Experimental — %s\nframe %d of %d', ...
-        frameNames{panelIdx}, experimentalFrameIdx(panelIdx), ...
+    title(ax, sprintf('%s Experimental — %s\nframe %d of %d', ...
+        panelLabels{panelIdx}, frameNames{panelIdx}, experimentalFrameIdx(panelIdx), ...
         experimentalMetadata.frameCount));
 end
 
@@ -195,8 +196,8 @@ for panelIdx = 1:3
     end
 
     drawLongAxis(ax, P);
-    title(ax, sprintf('Simulation — %s: t = %.4g s', frameNames{panelIdx}, ...
-        tSol(frameIdx(panelIdx))));
+    title(ax, sprintf('%s Simulation — %s: t = %.4g s', ...
+        panelLabels{panelIdx + 3}, frameNames{panelIdx}, tSol(frameIdx(panelIdx))));
     formatSnapshotAxes(ax, plotMin, plotMax, displayUnit);
 end
 
