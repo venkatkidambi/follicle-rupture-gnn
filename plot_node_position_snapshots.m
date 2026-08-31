@@ -1,12 +1,12 @@
 function [hFig, info] = plot_node_position_snapshots(simFile)
-%PLOT_NODE_POSITION_SNAPSHOTS Plot the shell at its initial, middle, and final times.
+%PLOT_NODE_POSITION_SNAPSHOTS Compare tracked and simulated shell positions.
 %   plot_node_position_snapshots() reads the default simulation result.
 %   plot_node_position_snapshots(simFile) reads the specified MAT-file.
 %
-% The initial node cloud defines a common principal-axis coordinate system.
-% PC1 (the football's long axis) becomes the horizontal x coordinate in all
-% three panels. Node identities in the requested initial PC1 percentile
-% bands are preserved through time, so their motion can be compared.
+% The top row shows the beginning, middle, and end frames from the tracked
+% experimental input. The bottom row shows the corresponding beginning,
+% middle, and end snapshots from the simulation. The simulation's initial
+% node cloud defines the common principal-axis coordinate system.
 
 if nargin < 1 || isempty(simFile)
     repoRoot = fileparts(mfilename('fullpath'));
@@ -24,7 +24,7 @@ if ~isfile(simFile)
 end
 
 S = load(simFile, 'nodeCoords', 'edgeList', 'Y', 'tSol', 'D_time', 'param');
-requiredFields = {'nodeCoords', 'edgeList', 'Y', 'tSol', 'D_time'};
+requiredFields = {'nodeCoords', 'edgeList', 'Y', 'tSol', 'D_time', 'param'};
 for fieldIdx = 1:numel(requiredFields)
     if ~isfield(S, requiredFields{fieldIdx})
         error('plot_node_position_snapshots:missingData', ...
@@ -116,13 +116,20 @@ if isfield(S, 'param') && isfield(S.param, 'units') && ...
 end
 
 alignedFrames = cell(1,3);
-allAligned = zeros(3*N,3);
 for panelIdx = 1:3
     displacement = reshape(Y(frameIdx(panelIdx),:), 3, []).';
     absolutePosition = nodeCoords + displacement;
     alignedFrames{panelIdx} = (absolutePosition - center0) * pcaBasis * displayScale;
-    rowIdx = (panelIdx-1)*N + (1:N);
-    allAligned(rowIdx,:) = alignedFrames{panelIdx};
+end
+
+[experimentalFrames, experimentalFrameIdx, experimentalValidMasks, ...
+    experimentalBandMasks, experimentalMetadata] = loadExperimentalFrames( ...
+    S.param, nodeCoords, bandMasks, center0, pcaBasis, displayScale, simFile);
+
+allAligned = vertcat(alignedFrames{:});
+for panelIdx = 1:3
+    allAligned = [allAligned; ...
+        experimentalFrames{panelIdx}(experimentalValidMasks{panelIdx},:)]; %#ok<AGROW>
 end
 
 dataMin = min(allAligned, [], 1);
@@ -135,43 +142,46 @@ colors.other = [0.72 0.74 0.78];
 colors.bands = [0.88 0.20 0.18; ...
                 0.20 0.62 0.30; ...
                 0.20 0.42 0.88];
-colors.edges = [0.60 0.62 0.66];
-colors.rupture = [0.75 0.00 0.75];
 bandLabels = {'0-10 percentile', '25-35 percentile', '45-55 percentile'};
 
-hFig = figure('Color', 'w', 'Name', 'Node position snapshots');
-layout = tiledlayout(hFig, 1, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
-title(layout, sprintf('Node positions in initial principal-axis coordinates — %s', ...
-    string(simFile)), 'Interpreter', 'none');
+hFig = figure('Color', 'w', 'Name', 'Experimental and simulated node position snapshots');
+layout = tiledlayout(hFig, 2, 3, 'TileSpacing', 'compact', 'Padding', 'compact');
+title(layout, ...
+    'Tracked experiment (top) and simulation (bottom) in initial principal-axis coordinates');
+
+axesHandles = gobjects(2,3);
+for panelIdx = 1:3
+    ax = nexttile(layout, panelIdx);
+    axesHandles(1,panelIdx) = ax;
+    hold(ax, 'on');
+    P = experimentalFrames{panelIdx};
+    validMask = experimentalValidMasks{panelIdx};
+    currentBandMasks = experimentalBandMasks & validMask;
+    otherExperimentalMask = validMask & ~any(experimentalBandMasks, 2);
+
+    scatter3(ax, P(otherExperimentalMask,1), P(otherExperimentalMask,2), ...
+        P(otherExperimentalMask,3), 18, colors.other, 'filled', ...
+        'MarkerFaceAlpha', 0.50, 'DisplayName', 'Other nodes');
+    for bandIdx = 1:3
+        mask = currentBandMasks(:,bandIdx);
+        scatter3(ax, P(mask,1), P(mask,2), P(mask,3), ...
+            30, colors.bands(bandIdx,:), 'filled', ...
+            'MarkerEdgeColor', [0.15 0.15 0.15], ...
+            'LineWidth', 0.35, 'DisplayName', bandLabels{bandIdx});
+    end
+
+    drawLongAxis(ax, P(validMask,:));
+    formatSnapshotAxes(ax, plotMin, plotMax, displayUnit);
+    title(ax, sprintf('Experimental — %s\nframe %d of %d', ...
+        frameNames{panelIdx}, experimentalFrameIdx(panelIdx), ...
+        experimentalMetadata.frameCount));
+end
 
 for panelIdx = 1:3
-    ax = nexttile(layout);
+    ax = nexttile(layout, panelIdx + 3);
+    axesHandles(2,panelIdx) = ax;
     hold(ax, 'on');
     P = alignedFrames{panelIdx};
-
-    damageNow = D_time(frameIdx(panelIdx),:).';
-    failedEdges = damageNow >= 0.5;
-    intactEdges = ~failedEdges;
-    plotEdgeSegments(ax, P, edgeList(intactEdges,:), colors.edges, 0.45);
-
-    selectedIntact = ruptureEdges(~failedEdges(ruptureEdges));
-    if ~isempty(selectedIntact)
-        plotEdgeSegments(ax, P, edgeList(selectedIntact,:), ...
-            colors.rupture, 3.0, 'Weak (rupture) edge');
-    end
-
-    selectedFailed = ruptureEdges(failedEdges(ruptureEdges));
-    if ~isempty(selectedFailed)
-        failedNodes = unique(edgeList(selectedFailed,:));
-        scatter3(ax, P(failedNodes,1), P(failedNodes,2), P(failedNodes,3), ...
-            95, colors.rupture, 'o', 'LineWidth', 2.2, ...
-            'DisplayName', 'Rupture-patch nodes');
-        failedMidpoints = 0.5*(P(edgeList(selectedFailed,1),:) + ...
-                               P(edgeList(selectedFailed,2),:));
-        scatter3(ax, failedMidpoints(:,1), failedMidpoints(:,2), failedMidpoints(:,3), ...
-            150, colors.rupture, 'x', 'LineWidth', 3.0, ...
-            'DisplayName', 'Ruptured edges (removed)');
-    end
 
     scatter3(ax, P(otherMask,1), P(otherMask,2), P(otherMask,3), ...
         18, colors.other, 'filled', 'MarkerFaceAlpha', 0.50, ...
@@ -184,35 +194,13 @@ for panelIdx = 1:3
             'LineWidth', 0.35, 'DisplayName', bandLabels{bandIdx});
     end
 
-    % PC1 is the x axis in this coordinate system. Draw it through the
-    % current cloud centroid so any overall translation remains visible.
-    currentCenter = mean(P, 1);
-    axisX = [min(P(:,1)), max(P(:,1))];
-    plot3(ax, axisX, currentCenter(2)*[1 1], currentCenter(3)*[1 1], ...
-        'k-', 'LineWidth', 2.2, 'DisplayName', 'Principal long axis');
-
-    xlabel(ax, sprintf('Principal long axis (%s)', displayUnit));
-    ylabel(ax, sprintf('PC2 (%s)', displayUnit));
-    zlabel(ax, sprintf('PC3 (%s)', displayUnit));
-    if isempty(ruptureEdges)
-        ruptureStatus = 'no rupture edge selected';
-    else
-        ruptureStatus = sprintf('rupture damage D = %.3f', max(damageNow(ruptureEdges)));
-    end
-    title(ax, sprintf('%s: t = %.4g s\n%s', frameNames{panelIdx}, ...
-        tSol(frameIdx(panelIdx)), ruptureStatus));
-    grid(ax, 'on');
-    box(ax, 'on');
-    axis(ax, 'equal');
-    xlim(ax, [plotMin(1), plotMax(1)]);
-    ylim(ax, [plotMin(2), plotMax(2)]);
-    zlim(ax, [plotMin(3), plotMax(3)]);
-    % Keep the original principal-axis coordinates and change only the
-    % viewpoint: negative PC1 is now the end closest to the viewer.
-    view(ax, -35, 20);
+    drawLongAxis(ax, P);
+    title(ax, sprintf('Simulation — %s: t = %.4g s', frameNames{panelIdx}, ...
+        tSol(frameIdx(panelIdx))));
+    formatSnapshotAxes(ax, plotMin, plotMax, displayUnit);
 end
 
-legend(nexttile(layout, 1), 'Location', 'southoutside', 'NumColumns', 3);
+legend(axesHandles(2,1), 'Location', 'southoutside', 'NumColumns', 3);
 
 info.simFile = simFile;
 info.frameIndices = frameIdx;
@@ -225,26 +213,134 @@ info.bandMasks = bandMasks;
 info.bandNodeIndices = {find(bandMasks(:,1)), find(bandMasks(:,2)), find(bandMasks(:,3))};
 info.ruptureEdges = ruptureEdges;
 info.ruptureDamageAtFrames = D_time(frameIdx, ruptureEdges);
+info.experimentalFile = experimentalMetadata.file;
+info.experimentalVariable = experimentalMetadata.variable;
+info.experimentalFrameIndices = experimentalFrameIdx;
+info.experimentalFrameCount = experimentalMetadata.frameCount;
+info.experimentalValidMasks = experimentalValidMasks;
+info.experimentalAffineTransform = experimentalMetadata.affineTransform;
 end
 
 
-function h = plotEdgeSegments(ax, P, edges, color, lineWidth, displayName)
-% Plot many disconnected edges as one NaN-separated line object.
-if isempty(edges)
-    h = gobjects(0);
-    return;
+function [alignedFrames, frameIdx, validMasks, experimentalBandMasks, metadata] = ...
+        loadExperimentalFrames(param, nodeCoords, bandMasks, center0, pcaBasis, ...
+        displayScale, simFile)
+requiredParamFields = {'useExperimentalNodeData', 'experimentalNodeDataFile', ...
+    'experimentalNodeDataVariable', 'experimentalNodeDataFrame'};
+for fieldIdx = 1:numel(requiredParamFields)
+    if ~isfield(param, requiredParamFields{fieldIdx})
+        error('plot_node_position_snapshots:missingExperimentalMetadata', ...
+            'Simulation metadata is missing param.%s.', requiredParamFields{fieldIdx});
+    end
+end
+if ~param.useExperimentalNodeData
+    error('plot_node_position_snapshots:noExperimentalInput', ...
+        'This six-panel figure requires a simulation initialized from tracked experimental data.');
 end
 
-nEdges = size(edges,1);
-edgeX = [P(edges(:,1),1), P(edges(:,2),1), nan(nEdges,1)].';
-edgeY = [P(edges(:,1),2), P(edges(:,2),2), nan(nEdges,1)].';
-edgeZ = [P(edges(:,1),3), P(edges(:,2),3), nan(nEdges,1)].';
-h = plot3(ax, edgeX(:), edgeY(:), edgeZ(:), '-', ...
-    'Color', color, 'LineWidth', lineWidth);
+experimentalFile = char(param.experimentalNodeDataFile);
+if ~isfile(experimentalFile)
+    [~, sourceName, sourceExtension] = fileparts(experimentalFile);
+    repoRoot = fileparts(mfilename('fullpath'));
+    fallbackFile = fullfile(repoRoot, 'input_node_data', 'tracked_nodes', ...
+        [sourceName sourceExtension]);
+    if isfile(fallbackFile)
+        experimentalFile = fallbackFile;
+    else
+        error('plot_node_position_snapshots:experimentalFileNotFound', ...
+            'Tracked experimental data not found: %s', experimentalFile);
+    end
+end
 
-if nargin < 6 || isempty(displayName)
-    h.HandleVisibility = 'off';
+experimentalVariable = char(param.experimentalNodeDataVariable);
+source = load(experimentalFile, experimentalVariable);
+if ~isfield(source, experimentalVariable)
+    error('plot_node_position_snapshots:missingExperimentalVariable', ...
+        'Experimental file does not contain variable "%s".', experimentalVariable);
+end
+tracked = source.(experimentalVariable);
+if ~isnumeric(tracked) || ndims(tracked) > 3 || size(tracked,2) ~= 3
+    error('plot_node_position_snapshots:invalidExperimentalData', ...
+        'Experimental variable "%s" must be numeric [N x 3 x T].', experimentalVariable);
+end
+
+frameCount = size(tracked,3);
+if frameCount < 3
+    error('plot_node_position_snapshots:tooFewExperimentalFrames', ...
+        'At least three tracked experimental frames are required.');
+end
+frameIdx = [1, round((frameCount + 1)/2), frameCount];
+
+if isfield(param, 'experimentalCellIds') && ...
+        numel(param.experimentalCellIds) == size(nodeCoords,1)
+    trackIds = param.experimentalCellIds(:);
 else
-    h.DisplayName = displayName;
+    trackIds = (1:size(nodeCoords,1)).';
 end
+if any(trackIds < 1 | trackIds > size(tracked,1) | trackIds ~= round(trackIds))
+    error('plot_node_position_snapshots:invalidTrackIds', ...
+        'Saved experimental track IDs do not index the tracked node array.');
+end
+
+initialFrame = param.experimentalNodeDataFrame;
+if initialFrame < 1 || initialFrame > frameCount
+    error('plot_node_position_snapshots:invalidInitialExperimentalFrame', ...
+        'The saved experimental initialization frame is unavailable.');
+end
+calibrationRaw = double(tracked(trackIds,:,initialFrame));
+if any(~isfinite(calibrationRaw), 'all') || any(all(calibrationRaw == 0, 2))
+    error('plot_node_position_snapshots:invalidCalibrationTracks', ...
+        'Tracks used to initialize the simulation are invalid in the source data.');
+end
+
+% Recover the exact affine preprocessing that mapped raw tracked coordinates
+% to the saved initial simulation nodes (unit conversion, centering, and
+% principal-axis orientation). Applying it to all tracked frames preserves
+% the measured experimental motion in the simulation's display coordinates.
+affineTransform = [calibrationRaw, ones(size(calibrationRaw,1),1)] \ nodeCoords;
+
+trackCount = size(tracked,1);
+experimentalBandMasks = false(trackCount,3);
+for bandIdx = 1:3
+    experimentalBandMasks(trackIds(bandMasks(:,bandIdx)),bandIdx) = true;
+end
+
+alignedFrames = cell(1,3);
+validMasks = cell(1,3);
+for panelIdx = 1:3
+    rawFrame = double(tracked(:,:,frameIdx(panelIdx)));
+    validMasks{panelIdx} = all(isfinite(rawFrame), 2) & ~all(rawFrame == 0, 2);
+    processedFrame = [rawFrame, ones(trackCount,1)] * affineTransform;
+    alignedFrames{panelIdx} = (processedFrame - center0) * pcaBasis * displayScale;
+end
+
+metadata.file = experimentalFile;
+metadata.variable = experimentalVariable;
+metadata.frameCount = frameCount;
+metadata.affineTransform = affineTransform;
+metadata.simFile = simFile;
+end
+
+
+function drawLongAxis(ax, P)
+% PC1 is the x axis; draw it through the current valid cloud centroid.
+currentCenter = mean(P, 1);
+axisX = [min(P(:,1)), max(P(:,1))];
+plot3(ax, axisX, currentCenter(2)*[1 1], currentCenter(3)*[1 1], ...
+    'k-', 'LineWidth', 2.2, 'DisplayName', 'Principal long axis');
+end
+
+
+function formatSnapshotAxes(ax, plotMin, plotMax, displayUnit)
+xlabel(ax, sprintf('Principal long axis (%s)', displayUnit));
+ylabel(ax, sprintf('PC2 (%s)', displayUnit));
+zlabel(ax, sprintf('PC3 (%s)', displayUnit));
+grid(ax, 'on');
+box(ax, 'on');
+axis(ax, 'equal');
+xlim(ax, [plotMin(1), plotMax(1)]);
+ylim(ax, [plotMin(2), plotMax(2)]);
+zlim(ax, [plotMin(3), plotMax(3)]);
+% Negative PC1 is the end closest to the viewer.
+view(ax, -35, 20);
 end
