@@ -14,6 +14,8 @@ The model currently includes:
 
 Post-processing includes shell snapshots, signed long-axis percentile-ring
 displacement and velocity plots, and an MP4 animation of the rupture motion.
+An additional force figure shows rupture-patch tension and signed retraction
+forces in the same percentile bands.
 Standalone tests are not included at this stage.
 
 ## Run
@@ -26,7 +28,10 @@ run_simulation
 
 The simulation writes `results/follicleShellSim_test2.mat`, then exports the
 post-processing figures as `results/node_position_snapshots.png` and
-`results/percentile_ring_velocity.png`. It also renders the rupture motion to
+`results/percentile_ring_velocity.png`, plus
+`results/rupture_retraction_force.png`. Force measurements and the estimated
+rupture-onset interval are saved in `results/rupture_retraction_force.mat`
+as `forceInfo` (forces in newtons). It also renders the rupture motion to
 `results/follicle_rupture_motion.mp4` through the final saved simulation time.
 Generated results are ignored by git; `results/.gitkeep` preserves the output
 directory.
@@ -38,6 +43,7 @@ directory.
   local geometry, mechanics, unit, input, and progress helpers.
 - `plot_node_position_snapshots.m`: initial, middle, and final shell positions.
 - `plot_percentile_ring_velocity.m`: ring-average displacement and speed.
+- `plot_rupture_retraction_force.m`: rupture-patch tension and ring-average axial tissue pull.
 - `export_follicle_rupture_motion_video.m`: MP4 animation of shell rupture.
 - `input_node_data/`: optional experimental node-coordinate spreadsheets.
 - `results/`: local generated output.
@@ -152,3 +158,40 @@ every saved time, in addition to displacement `Y`, velocity `V`, edge damage
 figure and a second figure showing signed long-axis displacement and velocity
 for the initial 0-10%, 25-35%, and 45-55% principal-axis rings. Positive values
 indicate motion away from the rupture tip.
+
+## Rupture and Retraction Forces
+
+The separate force figure reports two model-derived measurements:
+
+- **Rupture-patch tensile load:** the sum of positive axial link forces over
+  the selected weak edges, including their current damage. The marked rupture
+  force estimate is the load at the last saved intact sample before any patch
+  edge exceeds damage `1e-6`. The title reports the interval between that sample
+  and the first damaged sample; finer saved output improves time resolution.
+  This is a sum of link tensions, not a vector resultant across a tissue
+  section. Rupture is still triggered by extension, not a force threshold.
+- **Retraction force:** the mean internal link force per node projected onto
+  the initial long axis for each initial 0–10%, 25–35%, and 45–55% band.
+  Positive means away from the rupture tip. Link forces include the model's
+  surface projection; external adhesion, drag, anchors, surface constraints,
+  and active traction are excluded. This measures tissue pull, not the net
+  force after resistance. The entire loading/retraction history is shown.
+
+Both panels display µN. No rupture force is reported if the patch never
+ruptures or is already damaged in the first saved sample. Empty percentile
+bands return `NaN` rather than a zero force.
+
+The simulation saves signed `edgeForce_time` (`Nt` by `Ne`),
+`nodeInternalForce_time`, and `nodeNetForce_time` (both `Nt` by `3N`, in
+node-wise x/y/z order), all in newtons. These are evaluated with the same
+mechanical equations and full viscoelastic states used by the solver; the net
+force includes all external loads and resistance. Older MAT-files must be
+regenerated because they do not contain the force histories or the internal
+viscoelastic states needed to reconstruct them.
+
+To inspect a newly generated result without rerunning the simulation:
+
+```matlab
+[forceFigure, forceInfo] = plot_rupture_retraction_force( ...
+    'results/follicleShellSim_test2.mat');
+```

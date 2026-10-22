@@ -511,19 +511,29 @@ A_time = min(max(XDimQ_all(:, iA1:iA2), 0), 1);
 % Save the imposed natural-length history alongside displacement/damage so
 % rupture can be checked directly in post-processing.
 Lnatural_time = zeros(numel(tSol), Ne);
+% Evaluate forces through the same RHS used by the solver, including the
+% viscoelastic history states, damage, and surface projection. Units are N.
+edgeForce_time = zeros(numel(tSol), Ne);
+nodeInternalForce_time = zeros(numel(tSol), nPos);
+nodeNetForce_time = zeros(numel(tSol), nPos);
 for it = 1:numel(tSol)
     Lnatural_time(it,:) = contractingNaturalLengths(tSol(it), param).';
+    [~, forces] = nondimRHS_shell(tDimQ_all(it), XDimQ_all(it,:).', param);
+    edgeForce_time(it,:) = forces.edgeForce.';
+    nodeInternalForce_time(it,:) = reshape(forces.nodeInternalForce.', 1, []);
+    nodeNetForce_time(it,:) = reshape(forces.nodeNetForce.', 1, []);
 end
 
 save(simFile, ...
      'nodeCoords','edgeList','L0_edge0','Lnatural_time','tSol','Y','V', ...
-     'D_time','A_time','param','-v7.3');
+     'D_time','A_time','edgeForce_time','nodeInternalForce_time', ...
+     'nodeNetForce_time','param','-v7.3');
 
 end % main
 
 
 %% ===================== Nondimensional wrapper RHS =====================
-function dXdim = nondimRHS_shell(t_dim, X_dim, param)
+function [dXdim, forces] = nondimRHS_shell(t_dim, X_dim, param)
 nPos = param.nPos;
 nVel = param.nVel;
 Ne   = param.Ne;
@@ -554,8 +564,12 @@ D_phys   = D_dim;
 A_phys   = A_dim;
 t_phys   = t_dim * scale.tau;
 
-dX_phys = ShellRHS_physical(t_phys, ...
-    [q_phys; v_phys; sig_phys; zet_phys; D_phys; A_phys], param);
+x_phys = [q_phys; v_phys; sig_phys; zet_phys; D_phys; A_phys];
+if nargout > 1
+    [dX_phys, forces] = ShellRHS_physical(t_phys, x_phys, param);
+else
+    dX_phys = ShellRHS_physical(t_phys, x_phys, param);
+end
 
 % back to ND
 dqdt_dim   = (dX_phys(1:nPos)/scale.L) * scale.tau;
@@ -573,7 +587,7 @@ end
 
 
 %% ========================= PHYSICAL RHS =========================
-function dxdt = ShellRHS_physical(t, x, param)
+function [dxdt, forces] = ShellRHS_physical(t, x, param)
 % X = [ q(3N); v(3N); sigma(Ne); zeta(Ne); D(Ne); A(N) ]
 
 N    = param.N;
@@ -681,6 +695,11 @@ end
 Fnet = zeros(N,3);
 for dim = 1:3
     Fnet(:,dim) = param.edgeAccumI * Fi(:,dim) + param.edgeAccumJ * Fj(:,dim);
+end
+
+if nargout > 1
+    forces.edgeForce = sig_total; % signed axial link force; tension is positive
+    forces.nodeInternalForce = Fnet; % projected link forces before external loads
 end
 
 dD = zeros(Ne,1);
@@ -799,6 +818,10 @@ Fnet = Fnet + F_surf + F_dampN + F_drag + F_active + F_adhesion;
 if isfield(param,'anchor_on') && param.anchor_on
     F_anchor = -param.k_anchor * qMat - param.c_anchor * vMat;
     Fnet = Fnet + param.anchorNodeMask .* F_anchor;
+end
+
+if nargout > 1
+    forces.nodeNetForce = Fnet; % includes drag, adhesion, surface and anchor loads
 end
 
 % dq/dt
