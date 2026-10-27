@@ -150,17 +150,14 @@ ylabel(displacementAx, sprintf('Mean axial displacement (%s)', displayUnit));
 ylabel(velocityAx, sprintf('Mean axial velocity (%s/s)', displayUnit));
 
 % Show the complete saved simulation, including the long post-rupture tail.
-plotEndFrame = Nt;
-xLimits = [tSol(1), tSol(plotEndFrame)];
+xLimits = [tSol(1), tSol(end)];
 xlim(displacementAx, xLimits);
 xlim(velocityAx, xLimits);
-visibleDisplacements = meanBandAxialDisplacementDisplay(1:plotEndFrame,:);
-peakVisibleDisplacement = max(abs(visibleDisplacements), [], 'all');
+peakVisibleDisplacement = max(abs(meanBandAxialDisplacementDisplay), [], 'all');
 if peakVisibleDisplacement > 0
     ylim(displacementAx, 1.05 * peakVisibleDisplacement * [-1 1]);
 end
-visibleSpeeds = meanBandAxialVelocityDisplay(1:plotEndFrame,:);
-peakVisibleSpeed = max(abs(visibleSpeeds), [], 'all');
+peakVisibleSpeed = max(abs(meanBandAxialVelocityDisplay), [], 'all');
 if peakVisibleSpeed > 0
     ylim(velocityAx, 1.05 * peakVisibleSpeed * [-1 1]);
 end
@@ -196,5 +193,5 @@ info.meanBandSpeedDisplay = meanBandSpeedDisplay;
 info.nodeAxialVelocity = nodeAxialVelocity;
 info.meanBandAxialVelocity = meanBandAxialVelocity;
 info.meanBandAxialVelocityDisplay = meanBandAxialVelocityDisplay;
-info.plotTimeLimit = [tSol(1), tSol(plotEndFrame)];
+info.plotTimeLimit = xLimits;
 end

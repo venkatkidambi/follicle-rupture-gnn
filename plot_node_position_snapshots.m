@@ -125,7 +125,7 @@ end
 
 [experimentalFrames, experimentalFrameIdx, experimentalValidMasks, ...
     experimentalBandMasks, experimentalMetadata] = loadExperimentalFrames( ...
-    S.param, nodeCoords, bandMasks, center0, pcaBasis, displayScale, simFile);
+    S.param, nodeCoords, bandMasks, center0, pcaBasis, displayScale);
 
 allAligned = vertcat(alignedFrames{:});
 for panelIdx = 1:3
@@ -225,7 +225,7 @@ end
 
 function [alignedFrames, frameIdx, validMasks, experimentalBandMasks, metadata] = ...
         loadExperimentalFrames(param, nodeCoords, bandMasks, center0, pcaBasis, ...
-        displayScale, simFile)
+        displayScale)
 requiredParamFields = {'useExperimentalNodeData', 'experimentalNodeDataFile', ...
     'experimentalNodeDataVariable', 'experimentalNodeDataFrame'};
 for fieldIdx = 1:numel(requiredParamFields)
@@ -319,7 +319,6 @@ metadata.file = experimentalFile;
 metadata.variable = experimentalVariable;
 metadata.frameCount = frameCount;
 metadata.affineTransform = affineTransform;
-metadata.simFile = simFile;
 end
 
 

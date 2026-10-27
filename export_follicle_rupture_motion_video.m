@@ -130,6 +130,7 @@ zlabel(ax, sprintf('PC3 (%s)', displayUnit));
 titleHandle = title(ax, '', 'Interpreter', 'none');
 legend(ax, ringNodePlots, 'Location', 'northeast');
 
+otherNodeMask = ~any(bandMasks, 2);
 try
     open(writer);
     writerIsOpen = true;
@@ -152,7 +153,6 @@ try
         set(intactEdgePlot, 'XData', edgeX, 'YData', edgeY, 'ZData', edgeZ);
         [edgeX, edgeY, edgeZ] = videoEdgeCoordinates(P, edgeList, selectedIntact);
         set(ruptureEdgePlot, 'XData', edgeX, 'YData', edgeY, 'ZData', edgeZ);
-        otherNodeMask = ~any(bandMasks, 2);
         set(otherNodePlot, 'XData', P(otherNodeMask,1), ...
             'YData', P(otherNodeMask,2), 'ZData', P(otherNodeMask,3));
         for bandIdx = 1:size(bandMasks,2)
