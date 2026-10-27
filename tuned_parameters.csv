@@ -1,0 +1,8 @@
+Parameter,FittedValue,LowerBound,UpperBound,Unit
+contractionRateFrac,0.000171468914776157,0.00002,0.0004,s^-1
+prestressStartTime,300,0,1200,s
+maxwellRelaxationTime,100,5,300,s
+adhesionThresholdMultiplier,0.170875716173712,0.15,8,dimensionless
+adhesionReleaseTau,8.90175786959909,2,180,s
+extensionCritFrac,0.012783580426942,0.01,0.15,dimensionless
+activationRiseTime,900,60,900,s

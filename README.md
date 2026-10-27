@@ -150,8 +150,186 @@ results; physical outputs remain in meters, seconds, and newtons.
 
 Time calibration is separate: `Step15_3Danalysis_v3.m:308–312` uses supplied
 `tvec` values or defaults to one time unit per frame. It does not establish
-seconds per frame. The simulation's existing time parameters are unchanged.
+seconds per frame. The acquisition duration was subsequently confirmed as
+**30 minutes across 45 frames**. Tuning assumes uniform sampling from 0 to
+1,800 s: **1,800 / 44 = 40.9090909 s between frames**, not 1,800 / 45.
+The simulation's existing default time parameters are unchanged.
 The `input_node_data/tracked_nodes/` folder remains ignored by Git.
+
+## Parameter fitting against tracked cells
+
+Run the bounded parameter search from the repository root in MATLAB:
+
+```matlab
+fit = tune_simulation(48);      % maximum number of coarse candidate solves
+summarize_tuning;              % trajectory comparison PNG and numerical report
+simFile = run_tuned_simulation; % independent forward run with fitted parameters
+verify_tuning;                 % tighter integration and force-balance checks
+```
+
+The fitter uses the calibrated `cell-scale` model. It reads an existing
+`results/follicleShellSim_cell_scale.mat` baseline, generating one if absent.
+It preserves the initial geometry, cell identities, mesh, spring constants,
+mass assumption, and shared force equations. `run_simulation.m` and its
+default coefficients remain unchanged; fitted runs are saved separately as
+`results/follicleShellSim_tuned.mat`.
+The checked-in `tuned_parameters.csv` records the first fitted preset for
+this acquisition. `run_tuned_simulation` uses the latest local fit when
+available and falls back to that preset otherwise. To run the recorded
+preset explicitly, use `run_tuned_simulation('tuned_parameters.csv')`.
+
+**No measured displacement is prescribed in the simulation.** The forward
+solver takes only model parameters, initial geometry, and output times.
+Node velocities emerge from mechanical force balance in the overdamped
+mass-spring-damper system. The existing global natural-length contraction
+law supplies active loading. Its onset and rate are fitted scalars; there
+are no fitted per-cell motion schedules, target-position forces, or imposed
+rupture times. Rupture still occurs at an extension-threshold crossing.
+
+| Fitted coefficient | Search interval | Units |
+| --- | ---: | --- |
+| Global natural-length shortening rate | 2e-5–4e-4 | 1/s |
+| Global contraction onset | 0–1200 | s |
+| Maxwell relaxation time `c/k2` | 5–300 | s |
+| Adhesion release-load multiplier | 0.15–8 | dimensionless |
+| Adhesion release time | 2–180 | s |
+| Weak-patch rupture strain | 0.01–0.15 | dimensionless |
+| Global contraction rise time | 60–900 | s |
+
+These are bounded modeling assumptions, not experimentally measured ranges.
+The equilibrium and transient springs stay at 0.002 N/m and cell mass stays
+at 5e-13 kg. The fitted relaxation time changes the edge dashpot. Absolute
+force scale cannot be identified from these trajectories alone: multiplying
+all forces and damping by a common factor preserves overdamped motion.
+Consequently, fitted trajectories do not independently validate predicted
+forces, spring constants, or cell mass.
+
+The comparison includes the 357 cells present in frame 1; the other 27 rows
+have no initial position and are excluded. A rigid rotation and translation
+align each experimental frame's far-body cap with the initial cap. This
+uses training cells only and never changes simulated positions, rescales the
+specimen, or fits deformation. It assumes the cap's coherent motion is
+specimen drift; real cap movement could also be removed. Both registered
+and raw observations are retained in the fit artifact.
+
+Every fifth cell in initial axial order is held out, giving 286 training
+cells and 71 validation cells. Even-numbered frames supply the training
+targets; odd frames after frame 1 supply 22 held-out frames. The objective
+is mean squared **3D position error**, so the large late retraction is not
+downweighted as an outlier. Only training error selects candidates. The
+joint holdout score evaluates excluded cells at excluded times. Pose
+correction at those times still uses observed training-cap cells, so this is
+interpolation validation within one specimen, not forecasting or independent
+biological validation. An unmoving initial configuration is scored alongside
+the original model to expose fits that merely suppress all motion.
+
+Search uses deterministic initial guesses, bounded coordinate steps, cached
+evaluations, sparse stiff integration, and coarse solver tolerances before
+rerunning the best three candidates at the standard fine tolerances. It uses
+no Optimization Toolbox, parallel pool, or videos during fitting. A trial
+time budget guards expensive candidates; timed-out trials are computationally
+censored rather than evidence of bad physics. Checkpoints preserve completed
+solves. To extend an unchanged search to a larger cumulative budget:
+
+```matlab
+fit = tune_simulation(72, true);
+summarize_tuning;
+```
+
+The local `results/parameter_tuning/` folder contains `best_fit.mat`
+(parameters, observations, predictions, split masks, errors, and history),
+`parameters.csv`, `search_history.mat`, `trajectory_comparison.png`, and
+`tuning_report.txt`. `cell_errors.csv` records errors by original tracked-cell
+ID, and `verification.mat` records numerical convergence and force balance.
+These generated outputs and the raw experimental MAT
+file remain ignored by Git. The fit is a local search; it does not establish
+parameter uniqueness, confidence intervals, or the adequacy of all model
+mechanisms.
+
+### Initial fit result
+
+The recorded preset improves the original model substantially but is **not
+a close match to the complete experimental motion**. After the documented
+rigid pose correction, training / joint holdout 3D RMSE are approximately
+15.40 / 19.75 µm, compared with 72.30 / 78.74 µm for the original cell-scale
+model and 19.90 / 21.09 µm for an unmoving initial configuration. The holdout
+improvement over no motion is only about 6.3%; the large improvement over
+the original model alone would overstate the calibration's success.
+
+| Final mean axial motion | Experiment, pose corrected | Fitted model |
+| --- | ---: | ---: |
+| Initial 0–10% band | 61.27 µm | 63.93 µm |
+| Initial 25–35% band | 59.80 µm | 27.99 µm |
+| Initial 45–55% band | 52.66 µm | 18.39 µm |
+
+The tip's final displacement is close, while the later middle-band motion
+is substantially underestimated. A targeted search over the existing global
+activation rise time did not improve training error. Damping and release
+coefficients were also weakly distinguished by the tested trajectories.
+The preset is a provisional, reproducible starting point; it does not show
+that parameter adjustment alone can reproduce all three bands. Its predicted
+rupture event is about 694.17 s, which is an internal model event rather than
+an experimentally established rupture timestamp.
+
+The 79 recorded coarse evaluations include nine early timeouts that were
+subsequently rerun successfully; the top three candidates were checked with
+fine integration. All 15 self-contained tests pass. Tenfold tighter solver
+tolerances and a halved maximum step change node positions by at most
+0.000491 µm and the rupture time by 0.000075 s. The maximum checked net-force
+residual is 2.03e-24 N. Numerical error is therefore negligible compared with
+the experimental mismatch.
+
+## Approximately concentric rupture variant
+
+To reduce the one-sided clustering while retaining cell-to-cell variation:
+
+```matlab
+simFile = run_concentric_simulation;
+```
+
+This starts from the saved tuned parameters and initial coordinates, runs a
+new forward solve, and writes `results/follicleShellSim_concentric.mat`,
+`concentric_comparison.png`, `concentric_comparison.csv`, and
+`follicle_rupture_motion_concentric.mp4`. The comparison includes an end-on
+view, angular drift, angular concentration, and axial retraction. Original
+and tuned runs are preserved. If no tuned result exists, the runner first
+creates one using `run_tuned_simulation`.
+
+The original 22 weak links were selected by extreme axial position. In this
+specimen their midpoint azimuths occupy only about 91 degrees, leaving most
+of the circumference intact. The concentric variant instead defines a cap
+by ellipsoid-normalized polar angle (the closest 10% of nodes to the pole)
+and weakens predominantly circumferential links throughout that cap. It
+retains meridional links to transmit retraction and rebuilds the contraction
+mask so weak links cannot shorten. The same strain-threshold rupture event
+and damage cascade still determine when the patch opens.
+
+A second, explicit modeling assumption supplies **soft circumferential
+substrate support**. Each cell's initial radial direction defines a
+half-plane through the long axis. A finite restoring force penalizes motion
+away from that half-plane, projected onto the local shell tangent. Axial
+and radial motion within the half-plane remain free; no equal cell speeds,
+prescribed ring radii, or measured target positions are imposed. Its default
+stiffness is 0.5 times mean equilibrium-link stiffness. This additional
+support is not an experimentally established material property.
+
+```matlab
+% Arguments: source simulation, support/equilibrium stiffness ratio, render video
+run_concentric_simulation('results/follicleShellSim_tuned.mat', 0.5, false);
+% Use ratio 0 to isolate the effect of the new weak-region geometry.
+```
+
+The soft support is needed because broadening rupture alone still permits
+circumferential collapse. Breaking *all* cap links was rejected because it
+leaves some tip nodes mechanically disconnected. The selected variant
+checks that every node retains an intact connection. Natural geometric
+irregularity and local speed differences remain, including some angular
+outliers; this is not an enforced circular boundary.
+
+This variant changes the mechanics and has **not been refitted** to the
+experimental trajectories. Reduced lateral clustering also reduces axial
+retraction, so the earlier fit scores and rupture time do not apply to it.
+The original runners omit the new support and retain their prior equations.
 
 ## Spreadsheet Node Data
 
