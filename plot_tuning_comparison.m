@@ -15,11 +15,19 @@ for band=1:3
         'MarkerSize',3,'LineWidth',1.2); hold on;
     plot(data.time/60,mean(fit.metrics.predictedAxial(mask,:),1)*1e6, ...
         'Color',[.05 .4 .8],'LineWidth',2);
-    yline(0,':','Color',[.7 .7 .7]); grid on;
+    if isfield(fit,'networkMetrics')
+        plot(data.time/60,mean(fit.networkMetrics.predictedAxial(mask,:),1)*1e6, ...
+            '--','Color',[.5 .5 .5],'LineWidth',1.5);
+    end
+    yline(0,':','Color',[.7 .7 .7],'HandleVisibility','off'); grid on;
     title(sprintf('Initial %d-%d%% band',data.percentileRanges(band,:)));
     xlabel('Time (min)'); ylabel('Mean axial displacement (\mum)');
     legend('Tracked cells, pose corrected','Tuned force model', ...
         'Location','northwest');
+    if isfield(fit,'networkMetrics')
+        legend('Tracked cells, pose corrected','Three-control fit','Frozen network benchmark', ...
+            'Location','northwest');
+    end
 end
 nexttile;
 mask=data.validationNodes;
@@ -33,6 +41,11 @@ scatter(data.time(data.validationFrames)/60, ...
 grid on; xlabel('Time (min)'); ylabel('3D position RMSE (\mum)');
 title('Cells excluded from fitting');
 legend('Tuned model','No-motion benchmark','Held-out frames','Location','northwest');
+if isfield(fit,'networkMetrics')
+    plot(data.time/60,sqrt(mean(fit.networkMetrics.error_um(mask,:).^2,1)), ...
+        '--','Color',[.5 .5 .5],'LineWidth',1.5);
+    legend('Three-control fit','No-motion benchmark','Held-out frames','Frozen network benchmark','Location','northwest');
+end
 nexttile;
 initial=fit.param.nodeCoords*1e6;
 prediction=initial+reshape(fit.prediction.Y(end,:),3,[]).'*1e6;

@@ -28,6 +28,15 @@ fprintf(fid,'Pose correction: %s.\n',data.registrationDescription);
 fprintf(fid,'No registration is applied to the simulated node positions.\n\n');
 fprintf(fid,'METHOD\n');
 fprintf(fid,'Fit %d global parameters with bounded, cached coordinate search.\n',numel(fit.values));
+if isfield(fit,'fitType') && strcmp(fit.fitType,'resistance')
+    fprintf(fid,'Three-control resistance extension of the saved network fit.\n');
+    fprintf(fid,'Network, weak patch, geometry, seven fitted coefficients, and data split are frozen.\n');
+    fprintf(fid,'Tip release threshold is fixed; body/tip ratio changes the existing linear threshold gradient.\n');
+    fprintf(fid,'One multiplier scales background and sliding drag; attached drag is fixed.\n');
+    fprintf(fid,'Bounds were fixed before search: ratio 1-12, stiffness and drag multipliers 0.2-5.\n');
+    fprintf(fid,'Multipliers reference the frozen network fit, not a previous trial.\n');
+    fprintf(fid,'Source fit: %s\n',fit.sourceFitFile);
+end
 if isfield(fit,'structure')
     fprintf(fid,'Also fit a static local graph and connected weak patch using training error only.\n');
     fprintf(fid,'Candidate links: symmetric %d-neighbor pool plus original links; connected graphs only.\n',fit.geometry.neighborPoolSize);
@@ -54,6 +63,9 @@ fprintf(fid,'No-motion benchmark      %13.6f   %18.6f\n',fit.stationaryMetrics.t
 if isfield(fit,'parameterOnlyMetrics')
     fprintf(fid,'Previous parameter fit   %13.6f   %18.6f\n',fit.parameterOnlyMetrics.trainRMSE_um,fit.parameterOnlyMetrics.validationRMSE_um);
 end
+if isfield(fit,'networkMetrics')
+    fprintf(fid,'Frozen network benchmark %13.6f   %18.6f\n',fit.networkMetrics.trainRMSE_um,fit.networkMetrics.validationRMSE_um);
+end
 fprintf(fid,'Fitted mechanics         %13.6f   %18.6f\n',fit.metrics.trainRMSE_um,fit.metrics.validationRMSE_um);
 fprintf(fid,'Training mean squared error: %.8f um^2\n',fit.metrics.objective);
 fprintf(fid,'Held-out median error: %.6f um\n',fit.metrics.validationMedian_um);
@@ -76,6 +88,26 @@ end
 fprintf(fid,'Fixed k1 = k2 = %.9g N/m; mass %.9g kg/cell.\n',mean(fit.param.k1_edge),fit.param.m);
 fprintf(fid,'Fitted edge dashpot %.9g N*s/m; adhesion tip/body loads %.9g / %.9g N.\n', ...
     mean(fit.param.c_edge),fit.param.adhesionLoadThresholdTip,fit.param.adhesionLoadThresholdBody);
+if isfield(fit,'fitType') && strcmp(fit.fitType,'resistance')
+    fprintf(fid,'Adhesion stiffness %.9g N/m; background/sliding drag %.9g / %.9g N*s/m.\n', ...
+        fit.param.adhesionStiffness,fit.param.c_drag,fit.param.adhesionDragSliding);
+    fprintf(fid,'Fixed attached drag %.9g N*s/m.\n',fit.param.adhesionDragStuck);
+    fprintf(fid,'Seven coefficients held fixed (adhesion multiplier is the original tip-scale reference):\n');
+    for idx=1:numel(fit.fixedParameterValues)
+        fprintf(fid,'  %s = %.12g\n',fit.fixedParameterNames{idx},fit.fixedParameterValues(idx));
+    end
+    fprintf(fid,'\nLOCAL SENSITIVITY AT THE NETWORK BENCHMARK\n');
+    fprintf(fid,'Central log perturbations x1.2 and /1.2; training positions only.\n');
+    for idx=1:numel(fit.values)
+        fprintf(fid,'%s: position derivative RMS %.6g um/log-unit; train RMSE (-,+) %.6f / %.6f um.\n', ...
+            fit.parameterNames{idx},fit.sensitivity.derivativeRMS_um(idx),fit.sensitivity.trainRMSE_um(idx,:));
+    end
+    fprintf(fid,'Pairwise derivative cosine matrix (near +/-1 indicates local similarity):\n');
+    fprintf(fid,'  % .6f % .6f % .6f\n',fit.sensitivity.derivativeCosine.');
+    fprintf(fid,'These local diagnostics do not establish parameter identifiability.\n');
+    atBound=abs(log(fit.values./fit.lowerBounds))<1e-6 | abs(log(fit.values./fit.upperBounds))<1e-6;
+    fprintf(fid,'Selected parameters at a search bound: %s\n',strjoin(fit.parameterNames(atBound),', '));
+end
 fprintf(fid,'\nCOMPUTATION AND LIMITS\n');
 fprintf(fid,'%d coarse evaluations (%d completed; %d censored/failed), %d final fine solves.\n', ...
     numel(fit.history),nnz(strcmp({fit.history.status},'ok')),nnz(~strcmp({fit.history.status},'ok')),numel(fit.fineCandidates));

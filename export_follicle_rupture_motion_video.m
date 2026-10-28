@@ -5,6 +5,7 @@ function [outFile, info] = export_follicle_rupture_motion_video(matFile, outFile
 %   export_follicle_rupture_motion_video(matFile, outFile) selects the input
 %   MAT-file and output MP4. An optional opts structure can override fps,
 %   quality, targetFrames, endTime, viewAz, viewEl, and damageThreshold.
+%   frameTitles optionally supplies one title per saved time for tracked data.
 
 repoRoot = fileparts(mfilename('fullpath'));
 if nargin < 1 || isempty(matFile)
@@ -24,8 +25,9 @@ if ~isfile(matFile)
         'Simulation result not found: %s', matFile);
 end
 
-S = load(matFile, 'nodeCoords', 'edgeList', 'Y', 'tSol', ...
-    'D_time', 'param');
+loadFields = intersect({'nodeCoords', 'edgeList', 'Y', 'tSol', ...
+    'D_time', 'param'}, who('-file', matFile), 'stable');
+S = load(matFile, loadFields{:});
 requiredFields = {'nodeCoords', 'edgeList', 'Y', 'tSol'};
 for fieldIdx = 1:numel(requiredFields)
     if ~isfield(S, requiredFields{fieldIdx})
@@ -48,6 +50,10 @@ if size(nodeCoords,2) ~= 3 || size(Y,1) ~= Nt || size(Y,2) ~= 3*N || ...
 end
 
 opts = videoDefaults(opts, S);
+if isfield(opts, 'frameTitles')
+    assert(iscellstr(opts.frameTitles) && numel(opts.frameTitles) == Nt, ...
+        'frameTitles must contain one character vector per saved time.');
+end
 frameCandidates = find(tSol <= opts.endTime);
 if isempty(frameCandidates)
     frameCandidates = 1;
@@ -177,6 +183,9 @@ try
         titleHandle.String = sprintf(['Follicle rupture | t = %.2f s | ', ...
             'rupture edges failed = %d/%d'], tSol(k), numel(selectedFailed), ...
             numel(ruptureEdges));
+        if isfield(opts, 'frameTitles')
+            titleHandle.String = opts.frameTitles{k};
+        end
         drawnow;
         writeVideo(writer, getframe(fig));
     end

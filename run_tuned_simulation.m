@@ -10,6 +10,7 @@ if nargin<1
     if ~isfile(fitFile), fitFile=fullfile(repo,'tuned_parameters.csv'); end
 end
 [~,~,extension]=fileparts(fitFile);
+isResistanceFit=false;
 if strcmpi(extension,'.csv')
     preset=readtable(fitFile);
     expected={'contractionRateFrac';'prestressStartTime';'maxwellRelaxationTime'; ...
@@ -27,6 +28,7 @@ if strcmpi(extension,'.csv')
 else
     loaded=load(fitFile,'fit');
     param=loaded.fit.param;
+    isResistanceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'resistance');
     clear loaded;
 end
 time=unique([linspace(0,1800,181),linspace(0,1800,45)]).';
@@ -34,6 +36,9 @@ result=tuning_simulate(param,time,'fine',300,true);
 simFile=fullfile(repo,'results','follicleShellSim_tuned.mat');
 if isfield(param,'damageMode') && strcmp(param.damageMode,'fitted-static-connected-patch')
     simFile=fullfile(repo,'results','follicleShellSim_network_tuned.mat');
+end
+if isResistanceFit
+    simFile=fullfile(repo,'results','follicleShellSim_resistance_tuned.mat');
 end
 save(simFile,'-struct','result','-v7.3');
 fprintf('Saved independently simulated fitted mechanics: %s\n',simFile);

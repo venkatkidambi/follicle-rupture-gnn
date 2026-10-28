@@ -158,6 +158,56 @@ The `input_node_data/tracked_nodes/` folder remains ignored by Git.
 
 ## Parameter fitting against tracked cells
 
+### Three-control resistance extension
+
+To test resistance assumptions while freezing the existing network fit:
+
+```matlab
+fit = tune_resistance_simulation(64);
+fitFile = fullfile('results','resistance_tuning','best_fit.mat');
+outputs = regenerate_tuned_results(fitFile);
+% Resume interrupted work with the same inputs and candidate budget:
+% fit = tune_resistance_simulation(64, true);
+```
+
+This fits only the body-to-tip adhesion release-load ratio (1–12), an
+adhesion stiffness multiplier (0.2–5), and a shared background/sliding drag
+multiplier (0.2–5). Multipliers reference the saved network fit. The tip load,
+attached drag, all seven previously fitted coefficients, connections, weak
+patch, initial geometry, registration, and training/validation split remain
+fixed. Changing the ratio replaces the body threshold in the existing
+linear spatial profile; it does not prescribe cell motion.
+
+Before searching, fine-solver runs perturb each control by ×1.2 and ÷1.2.
+`sensitivity.csv` and `sensitivity.mat` report training-position responses and
+similarity between parameter sensitivities. Bounds are fixed before these
+diagnostics. A deterministic log-space search uses at most 64 coarse trials,
+then checks the top five with fine integration. The unchanged network fit
+remains eligible. Only training 3D position error selects candidates;
+held-out performance is reported after selection and does not alter bounds
+or rankings. Sensitivity and fit checkpoints support interruption recovery.
+
+Results are separate in `results/resistance_tuning/`; forward plots/video
+use `_resistance_tuned`. The network fit and its outputs remain the frozen
+benchmark. No-argument run/plot commands continue to select the network fit;
+pass the resistance fit path above to inspect this controlled extension.
+The comparison figure includes that benchmark alongside the new
+fit and observed motion. Local sensitivity does not establish uniqueness,
+and the existing holdout is still within one specimen, not an independent
+biological validation.
+
+The first controlled run completed 48 coarse trials and checked five
+finalists with fine integration against the unchanged incumbent. It selected
+a body/tip ratio of 1, stiffness multiplier 0.2, and drag multiplier
+1.03497458. The first two reached their lower bounds. Training RMSE changed
+from 14.088893 to 14.067942 µm (about 0.15%); joint held-out RMSE changed
+from 16.753464 to 16.747194 µm (about 0.04%). This is a negligible improvement,
+not evidence that these parameters explain the remaining middle-ring
+mismatch or are uniquely identified. The original network fit remains the
+default; this extension is retained as a separate comparison experiment.
+
+### Network and original parameter searches
+
 To also fit **static cell connections and the weak rupture patch**, run:
 
 ```matlab
@@ -187,6 +237,20 @@ solver tolerances and force balance, and decodes the video to verify its
 frame count and coverage through 1,800 s. The corresponding
 `visualization_info_network_tuned.mat` records source paths and plot/video
 metadata.
+
+For matching videos made directly from the experimental tracks, run
+`export_experimental_reference_video`. It writes
+`results/experimental_tracked_motion_raw.mp4` (fixed initial calibration and
+orientation) and `results/experimental_tracked_motion_registered.mp4` (the
+same rigid pose correction used in the trajectory comparison). Both use the
+simulation's camera style, initial percentile-ring colors, and playback
+schedule. All 45 measured frames are shown by holding the last observation;
+positions are not interpolated. Titles identify the measured frame/time.
+Only the 357 cells present initially are included, matching the simulation;
+missing observations are hidden. No inferred links or rupture labels are
+shown. Source identities, calibration, registration, and frame mapping are
+saved in `results/experimental_reference_info.mat`. Both videos are decoded
+to check their frame counts and playback durations.
 
 This search starts from the existing parameter-only fit (or the checked-in
 preset) and alternates connection density/orientation, rupture-patch
