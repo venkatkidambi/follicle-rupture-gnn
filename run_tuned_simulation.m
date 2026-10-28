@@ -1,11 +1,12 @@
 function simFile = run_tuned_simulation(fitFile)
 %RUN_TUNED_SIMULATION Run the fitted mechanics with no observed trajectories.
-% Use the latest local fit, or the checked-in CSV preset if no local fit is
-% present. Only parameters and initial geometry enter the forward solver.
+% Prefer the local network fit, then the parameter-only fit, then the CSV
+% preset. Only parameters and initial geometry enter the forward solver.
 repo=fileparts(mfilename('fullpath'));
 addpath(fullfile(repo,'src'));
 if nargin<1
-    fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat');
+    fitFile=fullfile(repo,'results','network_tuning','best_fit.mat');
+    if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
     if ~isfile(fitFile), fitFile=fullfile(repo,'tuned_parameters.csv'); end
 end
 [~,~,extension]=fileparts(fitFile);
@@ -31,6 +32,9 @@ end
 time=unique([linspace(0,1800,181),linspace(0,1800,45)]).';
 result=tuning_simulate(param,time,'fine',300,true);
 simFile=fullfile(repo,'results','follicleShellSim_tuned.mat');
+if isfield(param,'damageMode') && strcmp(param.damageMode,'fitted-static-connected-patch')
+    simFile=fullfile(repo,'results','follicleShellSim_network_tuned.mat');
+end
 save(simFile,'-struct','result','-v7.3');
 fprintf('Saved independently simulated fitted mechanics: %s\n',simFile);
 end

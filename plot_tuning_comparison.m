@@ -1,7 +1,10 @@
 function figureHandle = plot_tuning_comparison(fitFile)
 %PLOT_TUNING_COMPARISON Measured and independently simulated trajectories.
 repo=fileparts(mfilename('fullpath'));
-if nargin<1, fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+if nargin<1
+    fitFile=fullfile(repo,'results','network_tuning','best_fit.mat');
+    if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+end
 loaded=load(fitFile,'fit'); fit=loaded.fit; data=fit.data;
 figureHandle=figure('Color','w','Visible','off','Position',[100 100 1450 820]);
 layout=tiledlayout(2,3,'TileSpacing','compact','Padding','compact');

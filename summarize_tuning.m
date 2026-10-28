@@ -1,7 +1,10 @@
 function summarize_tuning(fitFile)
 %SUMMARIZE_TUNING Export a comparison figure and auditable numerical report.
 repo=fileparts(mfilename('fullpath'));
-if nargin<1, fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+if nargin<1
+    fitFile=fullfile(repo,'results','network_tuning','best_fit.mat');
+    if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+end
 loaded=load(fitFile,'fit'); fit=loaded.fit; data=fit.data;
 cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
     sqrt(mean(fit.metrics.error_um.^2,2)),fit.metrics.error_um(:,end), ...
@@ -10,6 +13,7 @@ cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
     'ObservedFinalAxial_um','PredictedFinalAxial_um'});
 writetable(cellTable,fullfile(fileparts(fitFile),'cell_errors.csv'));
 fig=plot_tuning_comparison(fitFile); close(fig);
+if isfield(fit,'structure'), fig=plot_network_fit(fitFile); close(fig); end
 reportFile=fullfile(fileparts(fitFile),'tuning_report.txt');
 fid=fopen(reportFile,'w');
 assert(fid>=0,'Cannot open tuning report.');
@@ -24,6 +28,14 @@ fprintf(fid,'Pose correction: %s.\n',data.registrationDescription);
 fprintf(fid,'No registration is applied to the simulated node positions.\n\n');
 fprintf(fid,'METHOD\n');
 fprintf(fid,'Fit %d global parameters with bounded, cached coordinate search.\n',numel(fit.values));
+if isfield(fit,'structure')
+    fprintf(fid,'Also fit a static local graph and connected weak patch using training error only.\n');
+    fprintf(fid,'Candidate links: symmetric %d-neighbor pool plus original links; connected graphs only.\n',fit.geometry.neighborPoolSize);
+    fprintf(fid,'Search: anisotropic local neighbors, surface patch centers/sizes, and local edge swaps.\n');
+    fprintf(fid,'Connections: %d; weak links: %d; rupture-patch cell IDs: %s.\n', ...
+        fit.param.Ne,nnz(fit.param.damageMask),mat2str(fit.param.experimentalCellIds(fit.param.rupturePatchNodes).'));
+    fprintf(fid,'Explicit connections and weak-link labels are saved in connections.csv.\n');
+end
 fprintf(fid,'Training objective: mean squared 3D position error (um^2).\n');
 fprintf(fid,'%d training cells x %d training frames; %d held-out cells x %d held-out frames.\n', ...
     nnz(data.trainNodes),nnz(data.trainFrames),nnz(data.validationNodes),nnz(data.validationFrames));
@@ -39,6 +51,9 @@ fprintf(fid,'RESULTS (micrometers, 3D Euclidean errors)\n');
 fprintf(fid,'Model                    Training RMSE   Joint holdout RMSE\n');
 fprintf(fid,'Original cell-scale      %13.6f   %18.6f\n',fit.baselineMetrics.trainRMSE_um,fit.baselineMetrics.validationRMSE_um);
 fprintf(fid,'No-motion benchmark      %13.6f   %18.6f\n',fit.stationaryMetrics.trainRMSE_um,fit.stationaryMetrics.validationRMSE_um);
+if isfield(fit,'parameterOnlyMetrics')
+    fprintf(fid,'Previous parameter fit   %13.6f   %18.6f\n',fit.parameterOnlyMetrics.trainRMSE_um,fit.parameterOnlyMetrics.validationRMSE_um);
+end
 fprintf(fid,'Fitted mechanics         %13.6f   %18.6f\n',fit.metrics.trainRMSE_um,fit.metrics.validationRMSE_um);
 fprintf(fid,'Training mean squared error: %.8f um^2\n',fit.metrics.objective);
 fprintf(fid,'Held-out median error: %.6f um\n',fit.metrics.validationMedian_um);
@@ -66,8 +81,16 @@ fprintf(fid,'%d coarse evaluations (%d completed; %d censored/failed), %d final 
     numel(fit.history),nnz(strcmp({fit.history.status},'ok')),nnz(~strcmp({fit.history.status},'ok')),numel(fit.fineCandidates));
 unresolved=0;
 for idx=find(~strcmp({fit.history.status},'ok'))
-    resolved=arrayfun(@(entry) strcmp(entry.status,'ok') && ...
-        isequal(entry.values,fit.history(idx).values),fit.history);
+    if isfield(fit,'structure')
+        failed=fit.history(idx).candidate;
+        resolved=arrayfun(@(entry) strcmp(entry.status,'ok') && ...
+            isequal(entry.candidate.values,failed.values) && ...
+            isequal(entry.candidate.edges,failed.edges) && ...
+            isequal(entry.candidate.weakEdges,failed.weakEdges),fit.history);
+    else
+        resolved=arrayfun(@(entry) strcmp(entry.status,'ok') && ...
+            isequal(entry.values,fit.history(idx).values),fit.history);
+    end
     unresolved=unresolved+~any(resolved);
 end
 fprintf(fid,'%d recorded censored/failed attempts have no later successful solve at the same parameters.\n',unresolved);
@@ -80,6 +103,11 @@ fprintf(fid,'Absolute stiffness/force scale is not identifiable from these traje
 fprintf(fid,'common scaling of forces and damping leaves overdamped motion unchanged.\n');
 fprintf(fid,'The mass and spring scale remain assumptions, not fitted measurements.\n');
 fprintf(fid,'This is a local parameter fit with no confidence intervals or uniqueness claim.\n');
+if isfield(fit,'structure')
+    fprintf(fid,'The inferred graph/weak patch are fitted hypotheses, not identified biological contacts.\n');
+    fprintf(fid,'Search is bounded and heuristic, not an exhaustive optimum over all graphs.\n');
+    fprintf(fid,'Rupture time remains an emergent extension-threshold event.\n');
+end
 fprintf(fid,'Residual trajectory mismatch can reflect missing mechanics, not just parameter error.\n');
 fprintf('Wrote %s\n',reportFile);
 end

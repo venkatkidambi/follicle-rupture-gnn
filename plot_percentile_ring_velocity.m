@@ -165,7 +165,7 @@ end
 xlabel(velocityAx, 'Time (s)');
 title(displacementAx, 'Signed displacement away from tip (+) / toward tip (-)');
 title(velocityAx, 'Signed velocity away from tip (+) / toward tip (-)');
-title(layout, sprintf('Long-axis motion of initial principal-axis percentile rings — %s', ...
+title(layout, sprintf('Long-axis motion of initial percentile rings\n%s', ...
     [simFileName simFileExtension]), 'Interpreter', 'none');
 grid(displacementAx, 'on');
 grid(velocityAx, 'on');

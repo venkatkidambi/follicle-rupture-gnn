@@ -2,7 +2,10 @@ function verification = verify_tuning(fitFile)
 %VERIFY_TUNING Check convergence and force balance of the selected fit.
 repo=fileparts(mfilename('fullpath'));
 addpath(fullfile(repo,'src'));
-if nargin<1, fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+if nargin<1
+    fitFile=fullfile(repo,'results','network_tuning','best_fit.mat');
+    if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
+end
 loaded=load(fitFile,'fit'); fit=loaded.fit;
 % Tenfold tighter error tolerances and half the maximum time step. The
 % measured positions still do not enter this independent forward solve.

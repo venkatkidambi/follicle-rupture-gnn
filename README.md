@@ -158,13 +158,79 @@ The `input_node_data/tracked_nodes/` folder remains ignored by Git.
 
 ## Parameter fitting against tracked cells
 
+To also fit **static cell connections and the weak rupture patch**, run:
+
+```matlab
+fit = tune_network_simulation(160); % coarse candidate budget; resumable
+fitFile = fullfile('results','network_tuning','best_fit.mat');
+summarize_tuning(fitFile);
+verify_tuning(fitFile);
+simFile = run_tuned_simulation(fitFile);
+% Extend a completed/interrupted search with a larger total budget:
+% fit = tune_network_simulation(240, true);
+```
+
+To regenerate the complete output set from the latest saved fit, run:
+
+```matlab
+outputs = regenerate_tuned_results;
+% Or select a specific saved fit:
+% outputs = regenerate_tuned_results('results/network_tuning/best_fit.mat');
+```
+
+This reruns the forward simulation with all fitted coefficients, connections,
+and weak links, then exports snapshots, ring displacement/velocity, rupture
+and retraction forces, and the motion MP4. Network-fit outputs use the
+`_network_tuned` suffix in `results/`; earlier parameter-only outputs retain
+`_tuned`. It also refreshes the fit comparison plots/report, checks tighter
+solver tolerances and force balance, and decodes the video to verify its
+frame count and coverage through 1,800 s. The corresponding
+`visualization_info_network_tuned.mat` records source paths and plot/video
+metadata.
+
+This search starts from the existing parameter-only fit (or the checked-in
+preset) and alternates connection density/orientation, rupture-patch
+location/size, the seven mechanical coefficients, and explicit local edge
+swaps. Candidate connections come from the symmetric 12-neighbor graph of
+the **initial measured positions**, plus original links. A minimum spanning
+tree preserves connectivity in generated graphs; edge swaps preserve a
+minimum node degree of three. Global neighbor counts span 4, 6, 8, and 10;
+axial distance weights span 0.5, 1, and 2. Patch proposals cover the
+nonanchored surface and then explore nearby centers, with 1–32 connected
+weak links. These are search assumptions, not measured cell contacts.
+
+The graph and weak patch stay fixed throughout each forward simulation.
+Rest lengths come from initial positions. Weak links fail through the
+existing extension-threshold event and damage law; the rupture time is not
+a fitted clock. No node position, velocity, motion schedule, or trajectory
+feedback is introduced. Seven global mechanical scalars remain the only
+fitted actuation/material coefficients. The original training/validation
+split and rigid registration stay fixed; **only training 3D position error**
+selects graphs, patches, and coefficients. The five best coarse candidates
+are checked at fine solver accuracy against the previous parameter-only
+fit, which remains eligible as the incumbent.
+
+Outputs live separately in `results/network_tuning/`: the full fit and
+checkpoint, `connections.csv` with original cell IDs and weak-link labels,
+mechanical parameters, cell errors, trajectory and network comparison
+figures, and a report. The independent forward result is
+`results/follicleShellSim_network_tuned.mat`. Use `best_fit.mat` for network
+forward runs: the scalar parameter CSV alone does not encode the fitted
+connections or weak patch. The tuned-run, summary, comparison, and verification
+commands prefer the network fit when it exists; pass the parameter-only
+`best_fit.mat` explicitly to use the earlier fit. Existing parameter-only
+results and `run_simulation` remain unchanged. The inferred topology is a
+bounded, heuristic model fit; improved trajectory agreement does not
+uniquely identify biological contacts or the biological rupture site.
+
 Run the bounded parameter search from the repository root in MATLAB:
 
 ```matlab
 fit = tune_simulation(48);      % maximum number of coarse candidate solves
-summarize_tuning;              % trajectory comparison PNG and numerical report
-simFile = run_tuned_simulation; % independent forward run with fitted parameters
-verify_tuning;                 % tighter integration and force-balance checks
+fitFile = fullfile('results','parameter_tuning','best_fit.mat');
+summarize_tuning(fitFile);      % trajectory comparison PNG and numerical report
+simFile = run_tuned_simulation(fitFile); % independent forward run
+verify_tuning(fitFile);         % tighter integration and force-balance checks
 ```
 
 The fitter uses the calibrated `cell-scale` model. It reads an existing
@@ -174,8 +240,8 @@ mass assumption, and shared force equations. `run_simulation.m` and its
 default coefficients remain unchanged; fitted runs are saved separately as
 `results/follicleShellSim_tuned.mat`.
 The checked-in `tuned_parameters.csv` records the first fitted preset for
-this acquisition. `run_tuned_simulation` uses the latest local fit when
-available and falls back to that preset otherwise. To run the recorded
+this acquisition. `run_tuned_simulation` prefers the local network fit,
+then the parameter-only fit, and falls back to that preset otherwise. To run the recorded
 preset explicitly, use `run_tuned_simulation('tuned_parameters.csv')`.
 
 **No measured displacement is prescribed in the simulation.** The forward
