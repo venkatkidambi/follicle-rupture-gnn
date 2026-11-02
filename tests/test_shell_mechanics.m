@@ -139,6 +139,19 @@ for model = 1:6
     verifyTrue(testCase, all(isfinite(dx)));
     verifyLessThan(testCase, max(abs(forces.nodeNetForce),[],'all'), 1e-20);
 end
+% Repeat with a translating/deforming surface: algebraic drag elimination
+% must include the prescribed normal surface speed for every material.
+p.movingSurface.time=[0;10];
+p.movingSurface.center=[0 0 0;1 2 3]*1e-6;
+p.movingSurface.quadric(:,:,1)=diag(1./[p.ell_a p.ell_b p.ell_c].^2);
+p.movingSurface.quadric(:,:,2)=p.movingSurface.quadric(:,:,1)/1.1^2;
+for model = 1:6
+    p.connectionModelId_edge = model;
+    [dx,fullState]=overdamped_shell_rhs(5/p.scale.tau,reduced,p);
+    [~,forces]=follicle_shell_rhs(5/p.scale.tau,fullState,p);
+    verifyTrue(testCase,all(isfinite(dx)));
+    verifyLessThan(testCase,max(abs(forces.nodeNetForce),[],'all'),1e-20);
+end
 end
 
 function testJacobianIncludesNonlocalRuptureGate(testCase)

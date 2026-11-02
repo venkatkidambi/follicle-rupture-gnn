@@ -115,17 +115,11 @@ useEllipsoidNormalDamping = useEllipsoidNormals;
 % Ellipsoid signed error and outward normals at current node positions.
 % Experimental node clouds can keep their measured shape by disabling this.
 if useEllipsoidNormals
-    a = param.ell_a; b = param.ell_b; c = param.ell_c;
-    xx = pos(:,1); yy = pos(:,2); zz = pos(:,3);
-    fSurf = (xx./a).^2 + (yy./b).^2 + (zz./c).^2 - 1;
+    [level, nSurf, surfaceNormalSpeed] = shell_surface_geometry(t,pos,param);
+    fSurf = level - 1;
     if strcmp(surfaceConstraintMode, 'reference-ellipsoid')
         fSurf = fSurf - (param.surfaceLevel0 - 1);
     end
-    nxv = 2*xx/(a^2);
-    nyv = 2*yy/(b^2);
-    nzv = 2*zz/(c^2);
-    nrm = sqrt(nxv.^2 + nyv.^2 + nzv.^2) + 1e-18;
-    nSurf = [nxv./nrm, nyv./nrm, nzv./nrm];
 else
     fSurf = zeros(N,1);
     nSurf = zeros(N,3);
@@ -213,7 +207,7 @@ if useEllipsoidPenalty
     F_surf  = -param.k_surf * fSurf .* nSurf;
 end
 if useEllipsoidNormalDamping
-    vN      = sum(vMat .* nSurf, 2);
+    vN      = sum(vMat .* nSurf, 2) - surfaceNormalSpeed;
     F_dampN = -param.c_surf * (vN .* nSurf);
 end
 F_drag  = -param.c_drag * vMat;

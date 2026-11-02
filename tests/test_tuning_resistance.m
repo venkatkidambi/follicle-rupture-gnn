@@ -35,6 +35,16 @@ b=tuning_resistance_parameters(base,[3 2 .4]);
 verifyEqual(testCase,a,b);
 verifyEqual(testCase,a.c_drag/a.adhesionDragSliding,base.c_drag/base.adhesionDragSliding);
 end
+function testCanRefitAfterUniformThresholdSelected(testCase)
+base=fixture;
+base.adhesionLoadThresholdBody=base.adhesionLoadThresholdTip;
+base.adhesionLoadThreshold_node(:)=base.adhesionLoadThresholdTip;
+base.principalNodeScore0=[-2;0;2]*1e-5;
+base.anchorCutoff=2e-5; base.anchorNodeMask=[0;0;1];
+actual=tuning_resistance_parameters(base,[3 1 1]);
+verifyEqual(testCase,actual.adhesionLoadThreshold_node,[1;2;3]*1e-10,'RelTol',1e-14);
+verifyEqual(testCase,actual.adhesionLoadThresholdTip,base.adhesionLoadThresholdTip);
+end
 function base=fixture
 base=struct('adhesionLoadThresholdTip',1e-10,'adhesionLoadThresholdBody',6e-10, ...
     'adhesionLoadThreshold_node',[1;3.5;6]*1e-10,'adhesionStiffness',1e-3, ...

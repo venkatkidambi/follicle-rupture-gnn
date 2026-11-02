@@ -8,7 +8,8 @@ if nargin<1
 end
 loaded=load(fitFile,'fit'); fit=loaded.fit;
 % Tenfold tighter error tolerances and half the maximum time step. The
-% measured positions still do not enter this independent forward solve.
+% per-node measured positions do not enter this independent forward solve.
+% Moving-surface fits retain the same prescribed global geometry history.
 reference=tuning_simulate(fit.param,fit.data.time,'verification',300,true);
 delta=reshape((reference.Y-fit.prediction.Y).',3,[]);
 verification.maxPositionDifference_um=max(vecnorm(delta,2,1))*1e6;

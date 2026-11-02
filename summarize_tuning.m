@@ -6,6 +6,7 @@ if nargin<1
     if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
 end
 loaded=load(fitFile,'fit'); fit=loaded.fit; data=fit.data;
+isMoving=isfield(fit.param,'movingSurface');
 cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
     sqrt(mean(fit.metrics.error_um.^2,2)),fit.metrics.error_um(:,end), ...
     fit.metrics.observedAxial(:,end)*1e6,fit.metrics.predictedAxial(:,end)*1e6, ...
@@ -14,6 +15,7 @@ cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
 writetable(cellTable,fullfile(fileparts(fitFile),'cell_errors.csv'));
 fig=plot_tuning_comparison(fitFile); close(fig);
 if isfield(fit,'structure'), fig=plot_network_fit(fitFile); close(fig); end
+if isMoving, fig=plot_moving_surface_fit(fitFile); close(fig); end
 reportFile=fullfile(fileparts(fitFile),'tuning_report.txt');
 fid=fopen(reportFile,'w');
 assert(fid>=0,'Cannot open tuning report.');
@@ -28,6 +30,20 @@ fprintf(fid,'Pose correction: %s.\n',data.registrationDescription);
 fprintf(fid,'No registration is applied to the simulated node positions.\n\n');
 fprintf(fid,'METHOD\n');
 fprintf(fid,'Fit %d global parameters with bounded, cached coordinate search.\n',numel(fit.values));
+if isMoving
+    fprintf(fid,'Full ellipsoid fitted to training cells at every registered experimental frame.\n');
+    fprintf(fid,'Interpolate centers and positive-definite quadratic forms linearly; preserve initial node surface levels.\n');
+    fprintf(fid,'Normal damping uses velocity relative to the moving surface.\n');
+    if isfield(fit,'structure')
+        fprintf(fid,'Network connections, weak-patch location/size, and all ten mechanical/resistance controls are refitted.\n');
+        referenceFile=fit.multiplierReferenceFile;
+    else
+        fprintf(fid,'Network and weak patch are frozen; ten mechanical/resistance controls are refitted.\n');
+        referenceFile=fit.sourceFitFile;
+    end
+    fprintf(fid,'Multipliers reference the previous resistance fit: %s\n',referenceFile);
+    fprintf(fid,'Geometry at ALL frames is prescribed external forcing; validation is conditional on that geometry.\n');
+end
 if isfield(fit,'fitType') && strcmp(fit.fitType,'resistance')
     fprintf(fid,'Three-control resistance extension of the saved network fit.\n');
     fprintf(fid,'Network, weak patch, geometry, seven fitted coefficients, and data split are frozen.\n');
@@ -44,20 +60,39 @@ if isfield(fit,'structure')
     fprintf(fid,'Connections: %d; weak links: %d; rupture-patch cell IDs: %s.\n', ...
         fit.param.Ne,nnz(fit.param.damageMask),mat2str(fit.param.experimentalCellIds(fit.param.rupturePatchNodes).'));
     fprintf(fid,'Explicit connections and weak-link labels are saved in connections.csv.\n');
+    if isfield(fit,'searchCoverage')
+        fprintf(fid,'Every global control received an evaluated proposal: %d.\n',all(fit.searchCoverage.evaluatedControls));
+        fprintf(fid,'Selected connections changed: %d; selected weak-link pairs changed: %d.\n', ...
+            fit.searchCoverage.connectionsChanged,fit.searchCoverage.weakPairsChanged);
+        proposals=fit.searchCoverage.proposals;
+        fprintf(fid,'Evaluated graph / patch-center / patch-size / scalar / link-swap proposals: %d / %d / %d / %d / %d.\n', ...
+            nnz(startsWith(proposals,'local graph')),nnz(startsWith(proposals,'patch center')), ...
+            nnz(startsWith(proposals,'patch size')),nnz(startsWith(proposals,'mechanics')), ...
+            nnz(strcmp(proposals,'local edge swap')));
+    end
 end
 fprintf(fid,'Training objective: mean squared 3D position error (um^2).\n');
 fprintf(fid,'%d training cells x %d training frames; %d held-out cells x %d held-out frames.\n', ...
     nnz(data.trainNodes),nnz(data.trainFrames),nnz(data.validationNodes),nnz(data.validationFrames));
-fprintf(fid,'Every fifth spatially ordered cell and alternating frames are excluded from fitting.\n');
+fprintf(fid,'Every fifth spatially ordered cell and alternating frames are excluded from the mechanical fitting objective.\n');
 fprintf(fid,'Validation cells do not participate in rigid registration. Held-out frames use\n');
 fprintf(fid,'training cap cells at that frame for pose correction; this is interpolation\n');
 fprintf(fid,'validation within one specimen, not independent biological validation or forecasting.\n');
-fprintf(fid,'Measured trajectories enter only the objective. No prescribed displacements,\n');
-fprintf(fid,'target-position forces, node-specific fitted schedules, or imposed rupture time.\n');
+if isMoving
+    fprintf(fid,'Training trajectories also determine global surface geometry at all frames. No prescribed node displacements,\n');
+else
+    fprintf(fid,'Measured trajectories enter only the objective. No prescribed displacements,\n');
+end
+fprintf(fid,'per-node target-position forces, node-specific fitted schedules, or imposed rupture time.\n');
 fprintf(fid,'The existing single global natural-length contraction law supplies active loading.\n');
 fprintf(fid,'Velocities follow overdamped mass-spring-damper force balance.\n\n');
 fprintf(fid,'RESULTS (micrometers, 3D Euclidean errors)\n');
 fprintf(fid,'Model                    Training RMSE   Joint holdout RMSE\n');
+if isMoving
+    fprintf(fid,'Holdout scores below are conditional on measured surface geometry, not temporal forecasts.\n');
+    fprintf(fid,'Prior fixed surface      %13.6f   %18.6f\n',fit.fixedSurfaceMetrics.trainRMSE_um,fit.fixedSurfaceMetrics.validationRMSE_um);
+    fprintf(fid,'Moving before refit      %13.6f   %18.6f\n',fit.movingSurfaceInitialMetrics.trainRMSE_um,fit.movingSurfaceInitialMetrics.validationRMSE_um);
+end
 fprintf(fid,'Original cell-scale      %13.6f   %18.6f\n',fit.baselineMetrics.trainRMSE_um,fit.baselineMetrics.validationRMSE_um);
 fprintf(fid,'No-motion benchmark      %13.6f   %18.6f\n',fit.stationaryMetrics.trainRMSE_um,fit.stationaryMetrics.validationRMSE_um);
 if isfield(fit,'parameterOnlyMetrics')
@@ -109,6 +144,13 @@ if isfield(fit,'fitType') && strcmp(fit.fitType,'resistance')
     fprintf(fid,'Selected parameters at a search bound: %s\n',strjoin(fit.parameterNames(atBound),', '));
 end
 fprintf(fid,'\nCOMPUTATION AND LIMITS\n');
+if isMoving
+    d=fit.surfaceDiagnostics;
+    fprintf(fid,'Initial/final fitted ellipsoid volumes %.9g / %.9g um^3 (%.4f%% change).\n', ...
+        d.volume_um3(1),d.volume_um3(end),100*(d.volume_um3(end)/d.volume_um3(1)-1));
+    fprintf(fid,'Maximum approximate surface-fit RMS residual %.6f um.\n',max(d.rmsDistance_um));
+    fprintf(fid,'Ellipsoid volume is a shape-fit proxy; an open shell does not establish true enclosed volume.\n');
+end
 fprintf(fid,'%d coarse evaluations (%d completed; %d censored/failed), %d final fine solves.\n', ...
     numel(fit.history),nnz(strcmp({fit.history.status},'ok')),nnz(~strcmp({fit.history.status},'ok')),numel(fit.fineCandidates));
 unresolved=0;

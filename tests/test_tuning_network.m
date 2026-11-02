@@ -51,6 +51,35 @@ verifyError(testCase,@() tuning_rebuild_network(base,[1 2;2 3],1,[1e-4 300 100 .
 verifyError(testCase,@() tuning_rebuild_network(base,[1 2;1 2],1,[1e-4 300 100 .5 30 .03 500]), ...
     'follicle_rupture:invalidNetwork');
 end
+function testJointRebuildPreservesSurfaceAndAppliesAllControls(testCase)
+base=fixture; geometry=tuning_network_geometry(base);
+base.adhesionStiffness=.001; base.c_drag=1e-4; base.adhesionDragSliding=1e-5;
+fraction=min(max((base.principalNodeScore0-min(base.principalNodeScore0))/ ...
+    (base.anchorCutoff-min(base.principalNodeScore0)),0),1);
+base.adhesionLoadThreshold_node=base.adhesionLoadThresholdTip+ ...
+    (base.adhesionLoadThresholdBody-base.adhesionLoadThresholdTip)*fraction;
+base.movingSurface=struct('time',[0;10],'center',zeros(2,3), ...
+    'quadric',repmat(eye(3)/1e-8,1,1,2));
+base.surfaceLevel0=ones(base.N,1);
+edges=tuning_local_network(base,geometry,4,.5);
+weak=tuning_rupture_patch(base,edges,1,8);
+values=[1e-4 300 100 .5 30 .03 500 3 .7 2];
+p=tuning_rebuild_network(base,edges,weak,values);
+verifyEqual(testCase,p.movingSurface,base.movingSurface);
+verifyEqual(testCase,p.surfaceLevel0,base.surfaceLevel0);
+verifyEqual(testCase,p.nodeCoords,base.nodeCoords);
+verifyEqual(testCase,p.adhesionLoadThresholdTip,.5*base.adhesionLoadThresholdTip);
+verifyEqual(testCase,p.adhesionLoadThresholdBody,3*p.adhesionLoadThresholdTip);
+verifyEqual(testCase,p.adhesionLoadThreshold_node, ...
+    p.adhesionLoadThresholdTip*(1+2*fraction),'RelTol',1e-14);
+verifyEqual(testCase,p.adhesionStiffness,.7*base.adhesionStiffness,'RelTol',1e-14);
+verifyEqual(testCase,p.c_drag,2*base.c_drag);
+verifyEqual(testCase,p.adhesionDragSliding,2*base.adhesionDragSliding);
+verifyEqual(testCase,p.c_edge,100*p.k2_edge);
+verifyEqual(testCase,p.contractionRateFrac_edge(p.retractionMask>0), ...
+    repmat(values(1),nnz(p.retractionMask),1));
+verifyEqual(testCase,p.extensionCritFrac_edge(weak),repmat(values(6),numel(weak),1));
+end
 function testOriginalNetworkPreservesForces(testCase)
 file=fullfile(testCase.TestData.repo,'results','follicleShellSim_cell_scale.mat');
 assumeTrue(testCase,isfile(file),'Local calibrated baseline required for integration regression.');

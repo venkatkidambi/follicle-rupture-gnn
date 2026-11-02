@@ -11,6 +11,9 @@ AGENTS.md
 # Generated simulation outputs are local-only.
 results/*
 !results/.gitkeep
+!results/README.md
+!results/run_summary.csv
+!results/organization_manifest.csv
 
 # Experimental spreadsheets/raw node data are local-only.
 input_node_data/*

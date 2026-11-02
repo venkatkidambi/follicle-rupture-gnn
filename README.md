@@ -19,6 +19,54 @@ forces in the same percentile bands.
 Mechanics tests in `tests/` cover units, force scaling, damage, contraction,
 and an analytical overdamped retraction solution.
 
+## Prerelease snapshot: experimental swelling input
+
+`snapshot-2026-11-02-experimental-swelling` preserves the moving-surface
+implementation and tuning workflows before any model of mechanically emergent
+expansion is introduced. It is separate from `snapshot-2026-11-02`.
+
+**Experimental swelling/shape change is an input to this snapshot.** A full
+ellipsoid is fitted to training-cell coordinates at all 45 registered frames
+over 1,800 s. Its center, axes, and orientation describe the measured global
+geometry. Interpolated centers and quadratic forms prescribe a moving surface;
+a soft normal penalty preserves each node's initial surface level, and normal
+damping acts relative to the surface speed. This constraint supplies external
+forces and can affect network loading and rupture timing. Swelling is not
+predicted from pressure, water influx, or an explicit deformable oocyte.
+
+The network still computes individual cell motion through force balance.
+Natural-length contraction loads resisted links; a weak link reaching its
+extension threshold triggers rupture-patch failure, and the remaining stressed
+network drives recoil against adhesion and viscous resistance. Broken links
+lose load-bearing capacity rather than imparting an explicit energy-release
+impulse. Continued contraction and moving-surface forcing can also contribute
+to motion. Neither individual measured trajectories nor observed rupture time
+are prescribed to the forward solver.
+
+The moving-surface workflow fits ten global mechanical/resistance controls;
+the full moving-network workflow also searches connections and rupture-patch
+location/size. Held-out cells are excluded from surface fitting, but geometry
+from every frame is supplied. Reported validation is therefore conditional on
+the measured geometry, not an initial-state-only temporal forecast. Fitted
+ellipsoid volume is a shape proxy, especially after opening/retraction; it is
+not an independent measurement of oocyte swelling or enclosed volume.
+
+This source snapshot includes tests and lightweight result metadata. Raw
+tracked data, fitted MAT-files, videos, and generated figures remain local
+and ignored by Git. Reproducing the moving-surface fits requires those data
+and the preceding saved fits described below.
+
+## Saved results
+
+The [results index](results/README.md) consolidates the retained tuning stages
+and their comparison metrics. The latest full refit is in
+[results/current/](results/current/), earlier runs are in
+[results/archive/](results/archive/), and experimental reference videos are in
+[results/experimental/](results/experimental/). Each run's fit, reports,
+simulation, figures, and video are grouped together. Legacy output paths
+remain available as compatibility symlinks, so existing MATLAB commands and
+saved references continue to resolve without code changes.
+
 ## Run
 
 Open MATLAB in the repository root and run:
@@ -34,8 +82,8 @@ post-processing figures as `results/node_position_snapshots.png` and
 rupture-onset interval are saved in `results/rupture_retraction_force.mat`
 as `forceInfo` (forces in newtons). It also renders the rupture motion to
 `results/follicle_rupture_motion.mp4` through the final saved simulation time.
-Generated results are ignored by git; `results/.gitkeep` preserves the output
-directory.
+Generated result artifacts are ignored by Git. The results index, comparison
+table, preservation manifest, and `results/.gitkeep` are not ignored.
 
 The default `mechanicsProfile = 'legacy'` retains the original mechanical
 coefficients and historical artificial inertia. Both profiles now use the
@@ -61,8 +109,8 @@ To reproduce the old coordinate assumption, set
 follicle_rupture_msd_fixed('legacy', [], 'input-units');
 ```
 
-This adds `_input_units` to output names. Earlier local results are archived
-in `results/before_source_calibration/`. Coordinate calibration and mechanics
+This adds `_input_units` to output names. Retained local runs are listed in
+the [results index](results/README.md). Coordinate calibration and mechanics
 profile are independent: source calibration applies to both mechanics profiles.
 
 ## Repository Layout
@@ -81,7 +129,7 @@ profile are independent: source calibration applies to both mechanics profiles.
 - `plot_rupture_retraction_force.m`: rupture-patch tension and ring-average axial tissue pull.
 - `export_follicle_rupture_motion_video.m`: MP4 animation of shell rupture.
 - `input_node_data/`: optional experimental node-coordinate spreadsheets.
-- `results/`: local generated output.
+- `results/`: indexed local output, organized into `current/`, `archive/`, and `experimental/`.
 
 ## Main Parameters
 
@@ -116,8 +164,9 @@ input_node_data/tracked_nodes/trackedNodes_nuc_48_2_OA7_1.mat
 
 It loads `trackedNodes(:,:,1)` as the initial node cloud and converts raw
 image coordinates to meters **before centering, PCA, ellipsoid fitting, and
-six-nearest-neighbor mesh construction**. Later tracked frames are not used
-by the mechanics. The snapshot comparison recovers the full affine transform
+six-nearest-neighbor mesh construction**. In the default fixed-surface run,
+later tracked frames are not used by the mechanics. The snapshot comparison
+recovers the full affine transform
 from the calibrated initial nodes and applies it to all experimental frames.
 
 `Step14_findingAxis_v2.m` loads this exact filename at line 15, defines the
@@ -156,7 +205,77 @@ seconds per frame. The acquisition duration was subsequently confirmed as
 The simulation's existing default time parameters are unchanged.
 The `input_node_data/tracked_nodes/` folder remains ignored by Git.
 
+## Time-varying experimental ellipsoid
+
+`tune_moving_surface_simulation(120)` fits a full ellipsoid (center, three
+axes, and orientation) to training cells at each of the 45 registered
+experimental frames, then reoptimizes ten global mechanical/resistance
+controls. It starts from `results/resistance_tuning/best_fit.mat` and keeps
+that fit's network and weak rupture patch fixed. Existing fits are preserved;
+the new fit, checkpoint, parameter table, geometry table, and report go to
+`results/moving_surface_tuning/`. Pass `true` as the second argument to resume
+the same checkpoint with a larger evaluation budget.
+
+Centers and positive-definite quadratic forms interpolate linearly between
+frames. This avoids axis/sign swaps near spheroidal geometry. Each node keeps
+its initial ellipsoid level, as in the existing reference-ellipsoid penalty.
+Surface damping acts on velocity relative to the moving surface's normal
+speed. Node trajectories and rupture still emerge from force balance and the
+extension threshold; no individual observed node trajectories are imposed.
+The measured geometry **is an externally prescribed time-varying constraint**,
+so this is a geometry-conditioned simulation, not an initial-state-only
+prediction. Held-out cells never enter the ellipsoid fit, but all frame times
+do: validation errors are conditional on measured geometry, not temporal
+forecast errors. Ellipsoid volume is a shape-fit proxy; fitting an opening,
+retracting shell does not measure its actual enclosed volume.
+
+```matlab
+fit = tune_moving_surface_simulation(120);
+fitFile = fullfile('results','moving_surface_tuning','best_fit.mat');
+verify_tuning(fitFile);
+simFile = run_tuned_simulation(fitFile);
+plot_moving_surface_fit(fitFile);
+plot_tuning_comparison(fitFile);
+export_follicle_rupture_motion_video(simFile, ...
+    fullfile('results','follicle_rupture_motion_moving_surface_tuned.mp4'));
+```
+
+The moving-surface simulation saves to
+`results/follicleShellSim_moving_surface_tuned.mat`. All multipliers in this
+refit are relative to the previous resistance fit. The surface penalty and
+damping strengths remain fixed. The search uses training position MSE and
+selects among fine-solver candidates; it is a bounded local search, not a
+claim of a unique global optimum.
+
 ## Parameter fitting against tracked cells
+
+To reopen **every previously fitted control** while retaining the measured
+moving surface, run:
+
+```matlab
+fit = tune_moving_network_simulation(160);
+fitFile = fullfile('results','moving_network_tuning','best_fit.mat');
+outputs = regenerate_tuned_results(fitFile);
+```
+
+This starts from the saved moving-surface fit and alternates graph density
+(`k = 4, 6, 8, 10`), axial neighbor weights (`0.5, 1, 2`), broad and local
+rupture-patch centers, patch sizes (`1, 3, 8, 16, 32` weak links), individual
+local connection swaps, and all ten global mechanical/resistance controls.
+The candidate-link pool and connected-patch restrictions match the earlier
+network search. Initial node coordinates and the measured ellipsoid history
+are retained; no individual node trajectories or observed rupture time are
+imposed. Parameters retain the prior resistance fit as their multiplier
+reference, so rebuilding the incumbent reproduces the previous prediction.
+
+The search keeps the incumbent eligible in the final fine-solver comparison,
+selects using training error only, and records which proposal families and
+global controls were evaluated. Results are saved separately under
+`results/moving_network_tuning/`; the simulation, plots, and video use the
+`moving_network_tuned` suffix. Pass `true` as the second argument to resume
+the checkpoint for another refinement round. This is a bounded joint search,
+not an exhaustive optimum over all graphs. Validation remains conditional
+on experimental surface geometry at all frames.
 
 ### Three-control resistance extension
 

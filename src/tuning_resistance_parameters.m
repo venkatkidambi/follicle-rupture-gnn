@@ -8,8 +8,16 @@ if isfield(param,'ruptureTime'), param=rmfield(param,'ruptureTime'); end
 tip = base.adhesionLoadThresholdTip;
 oldRatio = base.adhesionLoadThresholdBody/tip;
 if values(1) ~= oldRatio
-    fraction = (base.adhesionLoadThreshold_node-tip) / ...
-        (base.adhesionLoadThresholdBody-tip);
+    if base.adhesionLoadThresholdBody==tip
+        % A previous fit can select a uniform threshold (ratio 1). Recover
+        % the original spatial profile from initial geometry, not 0/0.
+        score=base.principalNodeScore0;
+        fraction=min(max((score-min(score))/max(base.anchorCutoff-min(score),1e-18),0),1);
+        fraction(base.anchorNodeMask>0)=1;
+    else
+        fraction = (base.adhesionLoadThreshold_node-tip) / ...
+            (base.adhesionLoadThresholdBody-tip);
+    end
     assert(all(fraction >= -1e-12 & fraction <= 1+1e-12), ...
         'Expected the existing linear tip-to-body threshold profile.');
     param.adhesionLoadThresholdBody = tip*values(1);
