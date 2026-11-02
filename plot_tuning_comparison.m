@@ -80,6 +80,9 @@ if isfield(fit.param,'movingSurface')
         'Measured surface at all frames; not a temporal forecast');
     summary=strrep(summary,'One global natural-length contraction program', ...
         'Moving ellipsoid supplies external normal forces');
+elseif isfield(fit.param,'fixedSurface')
+    summary=strrep(summary,'No prescribed node displacements', ...
+        'First-frame ellipsoid held fixed; expansion disabled');
 end
 text(0,1,summary,'Units','normalized','VerticalAlignment','top','FontSize',11,'Interpreter','none');
 title(layout,'Experimental trajectories and force-driven parameter fit');

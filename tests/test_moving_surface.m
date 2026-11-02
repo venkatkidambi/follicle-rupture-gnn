@@ -50,3 +50,44 @@ p.movingSurface.center(2,1)=1e-6;
 [~,~,speed]=shell_surface_geometry(11,pos,p);
 verifyEqual(testCase,speed,zeros(2,1));
 end
+
+function testFreezePreservesRotatedTranslatedInitialSurface(testCase)
+angle=.43; R=[cos(angle) -sin(angle) 0;sin(angle) cos(angle) 0;0 0 1];
+Q=R*diag(1./([20 10 8]*1e-6).^2)*R.';
+center=[3 -2 1]*1e-6;
+p.movingSurface.time=[0;10];
+p.movingSurface.center=[center;center+[5 4 3]*1e-6];
+p.movingSurface.quadric=cat(3,Q,Q/1.2^2);
+p.nodeCoords=[10 4 -3;18 1 1]*1e-6;
+p.surfaceLevel0=shell_surface_geometry(0,p.nodeCoords,p);
+p.k_surf=5e-9; p.c_surf=.001; p.surfaceConstraintMode='reference-ellipsoid';
+p.ell_a=1; p.ell_b=1; p.ell_c=1; % old axis-aligned fit must not be used
+fixed=set_surface_mode(p,'fixed');
+verifyFalse(testCase,isfield(fixed,'movingSurface'));
+verifyEqual(testCase,fixed.surfaceLevel0,p.surfaceLevel0);
+verifyEqual(testCase,rmfield(fixed,'fixedSurface'),rmfield(p,'movingSurface'));
+[expectedLevel,expectedNormal]=shell_surface_geometry(0,p.nodeCoords,p);
+for t=[-1 0 5 10 100]
+    [level,normal,speed]=shell_surface_geometry(t,p.nodeCoords,fixed);
+    verifyEqual(testCase,level,expectedLevel,'AbsTol',1e-14);
+    verifyEqual(testCase,normal,expectedNormal,'AbsTol',1e-14);
+    verifyEqual(testCase,speed,zeros(2,1));
+end
+% Future measurements cannot affect fixed geometry or the preserved mechanics.
+p.movingSurface.center(2,:)=1e3;
+p.movingSurface.quadric(:,:,2)=eye(3)*1e20;
+verifyEqual(testCase,set_surface_mode(p,'fixed'),fixed);
+verifyEqual(testCase,set_surface_mode(fixed,'fixed'),fixed);
+end
+
+function testSurfaceModeDefaultsAndMissingHistory(testCase)
+p.ell_a=20e-6; p.ell_b=10e-6; p.ell_c=8e-6;
+verifyEqual(testCase,set_surface_mode(p,'saved'),p);
+verifyEqual(testCase,set_surface_mode(p,'fixed'),p);
+verifyError(testCase,@() set_surface_mode(p,'moving'), ...
+    'follicle_rupture:missingMovingSurface');
+p.movingSurface=struct('time',[0;10],'center',zeros(2,3), ...
+    'quadric',repmat(eye(3),1,1,2));
+verifyEqual(testCase,set_surface_mode(p,'saved'),p);
+verifyEqual(testCase,set_surface_mode(p,'moving'),p);
+end

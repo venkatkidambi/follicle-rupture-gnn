@@ -1,10 +1,14 @@
-function simFile = run_tuned_simulation(fitFile)
+function simFile = run_tuned_simulation(fitFile, surfaceMode)
 %RUN_TUNED_SIMULATION Run fitted mechanics without per-node observed trajectories.
 % Prefer the local network fit, then the parameter-only fit, then the CSV
 % preset. Moving-surface fits also carry the prescribed global geometry
 % history; no per-node measured trajectories enter the forward solver.
+% Optional surfaceMode: 'saved' (default), 'fixed' (freeze first frame), or
+% 'moving' (requires measured history). Overrides save to distinct filenames.
 repo=fileparts(mfilename('fullpath'));
 addpath(fullfile(repo,'src'));
+if nargin<2, surfaceMode='saved'; end
+surfaceMode=validatestring(surfaceMode,{'saved','fixed','moving'});
 if nargin<1
     fitFile=fullfile(repo,'results','network_tuning','best_fit.mat');
     if ~isfile(fitFile), fitFile=fullfile(repo,'results','parameter_tuning','best_fit.mat'); end
@@ -14,6 +18,7 @@ end
 isResistanceFit=false;
 isMovingSurfaceFit=false;
 isMovingNetworkFit=false;
+isFixedSurfaceFit=false;
 if strcmpi(extension,'.csv')
     preset=readtable(fitFile);
     expected={'contractionRateFrac';'prestressStartTime';'maxwellRelaxationTime'; ...
@@ -34,8 +39,10 @@ else
     isResistanceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'resistance');
     isMovingSurfaceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'moving-surface');
     isMovingNetworkFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'moving-surface-network');
+    isFixedSurfaceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'fixed-surface-network');
     clear loaded;
 end
+param=set_surface_mode(param,surfaceMode);
 time=unique([linspace(0,1800,181),linspace(0,1800,45)]).';
 result=tuning_simulate(param,time,'fine',300,true);
 simFile=fullfile(repo,'results','follicleShellSim_tuned.mat');
@@ -50,6 +57,13 @@ if isMovingSurfaceFit
 end
 if isMovingNetworkFit
     simFile=fullfile(repo,'results','follicleShellSim_moving_network_tuned.mat');
+end
+if isFixedSurfaceFit
+    simFile=fullfile(repo,'results','follicleShellSim_fixed_surface_network_tuned.mat');
+end
+if ~strcmp(surfaceMode,'saved')
+    [folder,stem]=fileparts(simFile);
+    simFile=fullfile(folder,[stem '_surface_' surfaceMode '.mat']);
 end
 save(simFile,'-struct','result','-v7.3');
 fprintf('Saved independently simulated fitted mechanics: %s\n',simFile);

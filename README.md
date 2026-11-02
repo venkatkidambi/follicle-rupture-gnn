@@ -247,6 +247,61 @@ damping strengths remain fixed. The search uses training position MSE and
 selects among fine-solver candidates; it is a bounded local search, not a
 claim of a unique global optimum.
 
+## Fixed-surface optimization and expansion toggle
+
+To start the next full optimization with experimental expansion disabled:
+
+```matlab
+fit = tune_fixed_surface_simulation(160);
+fitFile = fullfile('results','fixed_surface_network_tuning','best_fit.mat');
+outputs = regenerate_tuned_results(fitFile);
+```
+
+This starts from `results/moving_network_tuning/best_fit.mat` (the latest full
+moving-surface fit), falling back to `results/moving_surface_tuning/best_fit.mat`
+if needed. An optional third argument selects a specific source fit. The
+surface is frozen at its first measured frame: its center, orientation, full
+quadratic form, and each node's initial surface level are retained exactly.
+Normal surface speed is zero, while surface stiffness and damping remain.
+No later measured surface geometry enters the fixed-surface dynamics. This
+freezes all surface shape/pose changes, not only volume expansion.
+
+The search reopens the same ten mechanical/resistance controls, connections,
+and rupture-patch location/size, with the original multiplier reference,
+bounds, training/validation split, and registration retained. The source fit
+is used as initialization; this is a within-specimen refit, not an independent
+temporal forecast. The older seven-control `tune_network_simulation` default
+remains available and is a different workflow.
+
+Results and checkpoints go to `results/fixed_surface_network_tuning/`, leaving
+earlier fits intact. Before optimization, the unchanged source mechanics are
+simulated on the frozen surface and saved in
+`surface_comparison_before_refit.mat`; this records source and fixed-surface
+scores, source rupture time, and the fixed-surface prediction and rupture
+time. The fitted report also compares source, fixed-before-refit, and final
+scores. Only the before-refit comparison isolates the surface change at
+unchanged mechanical parameters. Resume with a larger total budget:
+
+```matlab
+fit = tune_fixed_surface_simulation(240, true);
+```
+
+The simulation runner also accepts an explicit surface override without
+refitting:
+
+```matlab
+sourceFit = fullfile('results','moving_network_tuning','best_fit.mat');
+movingFile = run_tuned_simulation(sourceFit, 'moving');
+fixedFile = run_tuned_simulation(sourceFit, 'fixed');
+```
+
+`'saved'` is the default and uses the fit's stored surface. `'moving'` requires
+a fit with measured surface history; a frozen fit cannot reconstruct that
+history. Explicit overrides append `_surface_moving` or `_surface_fixed` to
+the output filename. The fixed-surface optimizer's normal forward simulation
+and regenerated plots/video use the distinct `_fixed_surface_network_tuned`
+suffix. A requested optimization starts only when its tuning command is run.
+
 ## Parameter fitting against tracked cells
 
 To reopen **every previously fitted control** while retaining the measured

@@ -7,6 +7,7 @@ if nargin<1
 end
 loaded=load(fitFile,'fit'); fit=loaded.fit; data=fit.data;
 isMoving=isfield(fit.param,'movingSurface');
+isFixedRefit=isfield(fit,'fitType') && strcmp(fit.fitType,'fixed-surface-network');
 cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
     sqrt(mean(fit.metrics.error_um.^2,2)),fit.metrics.error_um(:,end), ...
     fit.metrics.observedAxial(:,end)*1e6,fit.metrics.predictedAxial(:,end)*1e6, ...
@@ -43,6 +44,13 @@ if isMoving
     end
     fprintf(fid,'Multipliers reference the previous resistance fit: %s\n',referenceFile);
     fprintf(fid,'Geometry at ALL frames is prescribed external forcing; validation is conditional on that geometry.\n');
+end
+if isFixedRefit
+    fprintf(fid,'Freeze the source ellipsoid at frame 1, retaining its center, orientation, and node surface levels.\n');
+    fprintf(fid,'No subsequent measured surface motion enters the forward solve; normal surface speed is zero.\n');
+    fprintf(fid,'Refit network, weak patch, and all ten controls from the source fit: %s\n',fit.sourceFitFile);
+    fprintf(fid,'Preserve the original multiplier reference: %s\n',fit.multiplierReferenceFile);
+    fprintf(fid,'Initialization comes from a previously fitted model; this is not an independent temporal forecast.\n');
 end
 if isfield(fit,'fitType') && strcmp(fit.fitType,'resistance')
     fprintf(fid,'Three-control resistance extension of the saved network fit.\n');
@@ -81,7 +89,7 @@ fprintf(fid,'validation within one specimen, not independent biological validati
 if isMoving
     fprintf(fid,'Training trajectories also determine global surface geometry at all frames. No prescribed node displacements,\n');
 else
-    fprintf(fid,'Measured trajectories enter only the objective. No prescribed displacements,\n');
+    fprintf(fid,'Later measured trajectories are used for scoring and pose correction, not surface forcing. No prescribed displacements,\n');
 end
 fprintf(fid,'per-node target-position forces, node-specific fitted schedules, or imposed rupture time.\n');
 fprintf(fid,'The existing single global natural-length contraction law supplies active loading.\n');
@@ -92,6 +100,13 @@ if isMoving
     fprintf(fid,'Holdout scores below are conditional on measured surface geometry, not temporal forecasts.\n');
     fprintf(fid,'Prior fixed surface      %13.6f   %18.6f\n',fit.fixedSurfaceMetrics.trainRMSE_um,fit.fixedSurfaceMetrics.validationRMSE_um);
     fprintf(fid,'Moving before refit      %13.6f   %18.6f\n',fit.movingSurfaceInitialMetrics.trainRMSE_um,fit.movingSurfaceInitialMetrics.validationRMSE_um);
+end
+if isFixedRefit
+    fprintf(fid,'Source fit               %13.6f   %18.6f\n',fit.sourceMetrics.trainRMSE_um,fit.sourceMetrics.validationRMSE_um);
+    fprintf(fid,'Fixed before refit       %13.6f   %18.6f\n',fit.fixedSurfaceInitialMetrics.trainRMSE_um,fit.fixedSurfaceInitialMetrics.validationRMSE_um);
+    fprintf(fid,'Source / fixed-before-refit rupture times: %.9g / %.9g s.\n', ...
+        fit.sourceRuptureTime_s,fit.fixedSurfaceInitialRuptureTime_s);
+    fprintf(fid,'Only the fixed-before-refit comparison isolates the surface change at unchanged mechanics.\n');
 end
 fprintf(fid,'Original cell-scale      %13.6f   %18.6f\n',fit.baselineMetrics.trainRMSE_um,fit.baselineMetrics.validationRMSE_um);
 fprintf(fid,'No-motion benchmark      %13.6f   %18.6f\n',fit.stationaryMetrics.trainRMSE_um,fit.stationaryMetrics.validationRMSE_um);

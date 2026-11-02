@@ -152,6 +152,23 @@ for model = 1:6
     verifyTrue(testCase,all(isfinite(dx)));
     verifyLessThan(testCase,max(abs(forces.nodeNetForce),[],'all'),1e-20);
 end
+% Frozen rotated/translated geometry must give the same dynamics as an
+% independently constant surface history, for every supported material.
+p.movingSurface.center(1,:)=[2 -1 3]*1e-6;
+angle=.4; R=[cos(angle) -sin(angle) 0;sin(angle) cos(angle) 0;0 0 1];
+p.movingSurface.quadric(:,:,1)=R*p.movingSurface.quadric(:,:,1)*R.';
+fixed=set_surface_mode(p,'fixed');
+constant=p;
+constant.movingSurface.center(2,:)=constant.movingSurface.center(1,:);
+constant.movingSurface.quadric(:,:,2)=constant.movingSurface.quadric(:,:,1);
+for model = 1:6
+    fixed.connectionModelId_edge=model; constant.connectionModelId_edge=model;
+    [dx,fullState]=overdamped_shell_rhs(5/p.scale.tau,reduced,fixed);
+    expected=overdamped_shell_rhs(5/p.scale.tau,reduced,constant);
+    [~,forces]=follicle_shell_rhs(5/p.scale.tau,fullState,fixed);
+    verifyEqual(testCase,dx,expected,'AbsTol',1e-12);
+    verifyLessThan(testCase,max(abs(forces.nodeNetForce),[],'all'),1e-20);
+end
 end
 
 function testJacobianIncludesNonlocalRuptureGate(testCase)

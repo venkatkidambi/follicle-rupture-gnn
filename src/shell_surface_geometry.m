@@ -2,7 +2,13 @@ function [level, normal, normalSpeed] = shell_surface_geometry(t, pos, param)
 %SHELL_SURFACE_GEOMETRY Shared fixed/moving surface and its normal velocity.
 % Linear interpolation of positive-definite quadratic forms stays positive
 % definite and avoids eigenvector flips in nearly axisymmetric ellipsoids.
-if isfield(param,'movingSurface')
+if isfield(param,'fixedSurface')
+    r = pos-param.fixedSurface.center;
+    Q = param.fixedSurface.quadric;
+    gradient = 2*r*Q;
+    level = sum((r*Q).*r,2);
+    partialTime = zeros(size(level));
+elseif isfield(param,'movingSurface')
     s = param.movingSurface;
     interval = find(s.time<=t,1,'last');
     if isempty(interval), interval=1; end

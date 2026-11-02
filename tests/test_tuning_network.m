@@ -79,6 +79,11 @@ verifyEqual(testCase,p.c_edge,100*p.k2_edge);
 verifyEqual(testCase,p.contractionRateFrac_edge(p.retractionMask>0), ...
     repmat(values(1),nnz(p.retractionMask),1));
 verifyEqual(testCase,p.extensionCritFrac_edge(weak),repmat(values(6),numel(weak),1));
+% Freezing the reference before rebuilding must reproduce the exact source
+% mechanics/graph with only the surface history removed.
+fixedBase=set_surface_mode(base,'fixed');
+fixed=tuning_rebuild_network(fixedBase,edges,weak,values);
+verifyEqual(testCase,fixed,set_surface_mode(p,'fixed'));
 end
 function testOriginalNetworkPreservesForces(testCase)
 file=fullfile(testCase.TestData.repo,'results','follicleShellSim_cell_scale.mat');

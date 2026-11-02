@@ -1,28 +1,45 @@
-function fit = tune_network_simulation(maxEvaluations, resumeSearch, surfaceMode)
+function fit = tune_network_simulation(maxEvaluations, resumeSearch, surfaceMode, sourceFitFile)
 %TUNE_NETWORK_SIMULATION Fit static connections, weak patch, and global mechanics.
 % Motion is predicted by force balance. Only training position error selects
 % candidates; validation data never propose edges, patches, or coefficients.
 % The original parameter-only fit is retained in results/parameter_tuning.
+% An optional ten-control source fit enables a fixed-surface refit using the
+% same coefficient reference, graph, patch, observations, and search bounds.
 if nargin<1, maxEvaluations=160; end
 if nargin<2, resumeSearch=false; end
 if nargin<3, surfaceMode='fixed'; end
+if nargin<4, sourceFitFile=''; end
+surfaceMode=validatestring(surfaceMode,{'fixed','moving'});
 assert(ismember(surfaceMode,{'fixed','moving'}),'Use fixed or moving surface mode.');
 movingSearch=strcmp(surfaceMode,'moving');
+seededSearch=movingSearch || ~isempty(sourceFitFile);
 validateattributes(maxEvaluations,{'numeric'},{'scalar','integer','>=',8});
+if seededSearch
+    validateattributes(maxEvaluations,{'numeric'},{'scalar','integer','>=',80});
+end
 repo=fileparts(mfilename('fullpath')); addpath(fullfile(repo,'src'));
 if movingSearch
     outputName='moving_network_tuning';
+elseif seededSearch
+    outputName='fixed_surface_network_tuning';
 else
     outputName='network_tuning';
 end
 out=fullfile(repo,'results',outputName);
 if ~isfolder(out), mkdir(out); end
-if movingSearch
-    sourceFile=fullfile(repo,'results','moving_surface_tuning','best_fit.mat');
+if seededSearch
+    sourceFile=sourceFitFile;
+    if isempty(sourceFile)
+        sourceFile=fullfile(repo,'results','moving_surface_tuning','best_fit.mat');
+    end
     loaded=load(sourceFile,'fit'); previous=loaded.fit;
+    assert(isfield(previous,'frozenBase') && numel(previous.values)==10, ...
+        'follicle_rupture:invalidSurfaceSeed', ...
+        'The source must be a ten-control surface fit with its original coefficient reference.');
     % Retain the original multiplier reference so the incumbent is reproduced
     % exactly and changing the graph does not compound parameter multipliers.
     base=previous.frozenBase; data=previous.data;
+    base=set_surface_mode(base,surfaceMode);
     names=previous.parameterNames;
     lower=previous.lowerBounds; upper=previous.upperBounds;
     initialValues=previous.values;
@@ -66,6 +83,11 @@ initial=struct('values',initialValues,'edges',initialEdges, ...
 configuration=struct('version',1,'base',base,'data',data,'lower',lower,'upper',upper, ...
     'geometry',geometry,'initial',initial,'objective','training mean squared 3D position error');
 if movingSearch, configuration.version=2; configuration.surfaceMode=surfaceMode; end
+if seededSearch && (~movingSearch || ~isempty(sourceFitFile))
+    configuration.version=3;
+    configuration.surfaceMode=surfaceMode;
+    configuration.sourceFitFile=sourceFile;
+end
 history=struct('candidate',{},'objective',{},'trainRMSE_um',{},'wallSeconds',{},'status',{});
 checkpoint=fullfile(out,'search_history.mat');
 if resumeSearch && isfile(checkpoint)
@@ -94,6 +116,16 @@ incumbentMetrics=tuning_score(incumbent,data);
 if movingSearch
     assert(max(abs(incumbent.Y-previous.prediction.Y),[],'all')<1e-10, ...
         'Rebuilding the incumbent changed its prediction; check multiplier references.');
+end
+if seededSearch && ~movingSearch
+    fprintf('Fixed surface before refit: train %.5f um; holdout %.5f um; rupture %.9g s.\n', ...
+        incumbentMetrics.trainRMSE_um,incumbentMetrics.validationRMSE_um,incumbent.param.ruptureTime);
+    % Preserve the controlled switch-off comparison even if the search is
+    % interrupted. Its mechanics are unchanged from the source fit.
+    baseline=struct('sourceFitFile',sourceFile,'sourceMetrics',previous.metrics, ...
+        'sourceRuptureTime_s',previous.prediction.param.ruptureTime, ...
+        'fixedPrediction',incumbent,'fixedMetrics',incumbentMetrics);
+    save(fullfile(out,'surface_comparison_before_refit.mat'),'baseline','-v7.3');
 end
 stream=RandStream('mt19937ar','Seed',72419);
 % Alternate topology, patch, scalar, and local edge searches. Budgets reserve
@@ -207,16 +239,31 @@ fit.lowerBounds=lower; fit.upperBounds=upper;
 fit.param=tuning_rebuild_network(base,selected.edges,selected.weakEdges,selected.values);
 fit.metrics=bestMetrics; fit.baselineMetrics=baselineMetrics; fit.stationaryMetrics=stationaryMetrics;
 fit.data=data; fit.prediction=bestResult;
-if movingSearch
-    fit.fitType='moving-surface-network';
+if seededSearch
     fit.sourceFitFile=sourceFile;
-    fit.multiplierReferenceFile=previous.sourceFitFile;
+    if isfield(previous,'multiplierReferenceFile')
+        fit.multiplierReferenceFile=previous.multiplierReferenceFile;
+    else
+        fit.multiplierReferenceFile=previous.sourceFitFile;
+    end
     fit.frozenBase=base; % coefficient reference, not a frozen graph
-    fit.previousMovingSurfaceMetrics=incumbentMetrics;
-    fit.fixedSurfaceMetrics=previous.fixedSurfaceMetrics;
-    fit.movingSurfaceInitialMetrics=incumbentMetrics;
-    fit.surfaceDiagnostics=previous.surfaceDiagnostics;
-    fit.validationDescription=previous.validationDescription;
+    fit.surfaceMode=surfaceMode;
+    if movingSearch
+        fit.fitType='moving-surface-network';
+        fit.previousMovingSurfaceMetrics=incumbentMetrics;
+        fit.fixedSurfaceMetrics=previous.fixedSurfaceMetrics;
+        fit.movingSurfaceInitialMetrics=incumbentMetrics;
+        fit.surfaceDiagnostics=previous.surfaceDiagnostics;
+        fit.validationDescription=previous.validationDescription;
+    else
+        fit.fitType='fixed-surface-network';
+        fit.sourceMetrics=previous.metrics;
+        fit.sourceRuptureTime_s=previous.prediction.param.ruptureTime;
+        fit.fixedSurfaceInitialMetrics=incumbentMetrics;
+        fit.fixedSurfaceInitialRuptureTime_s=incumbent.param.ruptureTime;
+        fit.validationDescription=['Within-specimen holdout with first-frame surface fixed; ' ...
+            'same pose correction and split as source fit; initialized from a previously fitted model'];
+    end
 else
     fit.parameterOnlyMetrics=incumbentMetrics;
 end
@@ -226,8 +273,12 @@ fit.totalWallSeconds=toc(started);
 fit.forwardSolveSeconds=sum([history.wallSeconds])+sum([fine.wallSeconds]);
 fit.finalCoarseSolveBudgetSeconds=trialSeconds;
 fit.forwardModel='Static fitted local network and weak patch; unchanged force law; no observation feedback';
-if movingSearch
-    fit.forwardModel='Measured moving ellipsoid; fitted local graph, rupture patch, and all ten global controls';
+if seededSearch
+    if movingSearch
+        fit.forwardModel='Measured moving ellipsoid; fitted local graph, rupture patch, and all ten global controls';
+    else
+        fit.forwardModel='First-frame ellipsoid held fixed; fitted local graph, rupture patch, and all ten global controls';
+    end
     % Audit search coverage, including trials that retained incumbent values.
     proposals={history.candidate};
     fit.searchCoverage.proposals=cellfun(@(x) x.proposal,proposals,'UniformOutput',false);
