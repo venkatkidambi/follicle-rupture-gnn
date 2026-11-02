@@ -1,7 +1,7 @@
 function result = tuning_simulate(param, time, fidelity, maxSeconds, saveForces)
 %TUNING_SIMULATE Forward prediction using only parameters and initial geometry.
-% No measurements, target displacements, or time-varying position constraints
-% are accepted. The existing natural-length actuation drives the mechanics.
+% No per-node target displacements are accepted. Optional movingSurface
+% supplies measured global geometry; force balance still determines motion.
 if nargin<5, saveForces=false; end
 if nargin<4, maxSeconds=inf; end
 if nargin<3, fidelity='fine'; end

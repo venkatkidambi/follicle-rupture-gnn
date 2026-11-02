@@ -10,8 +10,7 @@ mode = lower(strtrim(char(param.surfaceConstraintMode)));
 useNormals = ismember(mode, {'ellipsoid','reference-ellipsoid','project-ellipsoid'});
 normal = zeros(param.N,3);
 if useNormals
-    gradient = 2*pos ./ [param.ell_a^2 param.ell_b^2 param.ell_c^2];
-    normal = gradient ./ (vecnorm(gradient,2,2) + 1e-18);
+    [~, normal] = shell_surface_geometry(t*param.scale.tau,pos,param);
 end
 baseDrag = param.c_drag * ones(param.N,1);
 if param.anchor_on

@@ -1,7 +1,8 @@
 function param = tuning_rebuild_network(base, edges, weakEdges, values)
 %TUNING_REBUILD_NETWORK Build a static mechanical network, then set coefficients.
 % Inputs contain initial geometry, connections, weak links, and global scalars
-% only. Observed trajectories never enter network construction or dynamics.
+% only. Optional measured global surface geometry is carried through unchanged.
+% Seven values set mechanics; ten values also set the resistance controls.
 N=base.N;
 validateattributes(edges,{'numeric'},{'integer','positive','ncols',2,'<=',N});
 assert(all(edges(:,1)<edges(:,2)) && size(unique(edges,'rows'),1)==size(edges,1), ...
@@ -50,5 +51,10 @@ param.minRestLengthFrac_edge(active)=base.minRestLengthFrac;
 param.contractionStartTime_edge=inf(Ne,1);
 param.contractionDuration_edge=zeros(Ne,1);
 param.extensionCritFrac_edge=inf(Ne,1);
-param=tuning_parameters(param,values);
+if numel(values)==10
+    param=tuning_parameters(param,values(1:7));
+    param=tuning_resistance_parameters(param,values(8:10));
+else
+    param=tuning_parameters(param,values);
+end
 end

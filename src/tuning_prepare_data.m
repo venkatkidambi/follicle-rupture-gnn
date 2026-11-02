@@ -1,5 +1,5 @@
 function data = tuning_prepare_data(param, duration)
-%TUNING_PREPARE_DATA Observations for scoring only; never used by an ODE RHS.
+%TUNING_PREPARE_DATA Registered observations for scoring and surface fitting.
 % Row identities and the initial geometry are fixed. Register each observed
 % frame using only training cells in the initially anchored cap. Registration
 % removes rigid pose, never scale or deformation, and never moves model nodes.

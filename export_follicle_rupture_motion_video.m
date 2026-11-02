@@ -5,6 +5,7 @@ function [outFile, info] = export_follicle_rupture_motion_video(matFile, outFile
 %   export_follicle_rupture_motion_video(matFile, outFile) selects the input
 %   MAT-file and output MP4. An optional opts structure can override fps,
 %   quality, targetFrames, endTime, viewAz, viewEl, and damageThreshold.
+%   showRuptureHighlights=false hides the pink edges, circles, and crosses.
 %   frameTitles optionally supplies one title per saved time for tracked data.
 
 repoRoot = fileparts(mfilename('fullpath'));
@@ -121,6 +122,9 @@ failedNodePlot = scatter3(ax, nan, nan, nan, 90, colors.rupture, ...
     'o', 'LineWidth', 1.8, 'HandleVisibility', 'off');
 failedMidpointPlot = scatter3(ax, nan, nan, nan, 120, colors.rupture, ...
     'x', 'LineWidth', 2.4, 'HandleVisibility', 'off');
+if ~opts.showRuptureHighlights
+    set([ruptureEdgePlot, failedNodePlot, failedMidpointPlot], 'Visible', 'off');
+end
 
 xlim(ax, plotLimits(1,:));
 ylim(ax, plotLimits(2,:));
@@ -212,6 +216,7 @@ info.ruptureEdges = ruptureEdges;
 info.percentileRanges = percentileRanges;
 info.bandMasks = bandMasks;
 info.tipNodeMask = bandMasks(:,1);
+info.showRuptureHighlights = opts.showRuptureHighlights;
 fprintf('Saved rupture video: %s (%d frames, %.2f s)\n', ...
     outFile, numel(frameIndices), info.duration);
 end
@@ -224,6 +229,7 @@ defaults.targetFrames = 240;
 defaults.viewAz = -35;
 defaults.viewEl = 20;
 defaults.damageThreshold = 0.5;
+defaults.showRuptureHighlights = true;
 defaults.endTime = S.tSol(end);
 
 names = fieldnames(defaults);
@@ -233,6 +239,8 @@ for fieldIdx = 1:numel(names)
         opts.(name) = defaults.(name);
     end
 end
+validateattributes(opts.showRuptureHighlights, {'logical'}, {'scalar'}, ...
+    mfilename, 'showRuptureHighlights');
 if opts.fps <= 0 || opts.quality < 0 || opts.quality > 100 || ...
         opts.targetFrames < 1 || opts.endTime < S.tSol(1)
     error('export_follicle_rupture_motion_video:invalidOptions', ...

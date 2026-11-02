@@ -5,6 +5,16 @@ if nargin<1, fitFile=fullfile(repo,'results','network_tuning','best_fit.mat'); e
 loaded=load(fitFile,'fit'); fit=loaded.fit;
 source=load(fullfile(fileparts(fitFile),'search_history.mat'),'configuration');
 original=source.configuration.base;
+% The coefficient reference may have an older graph than the source fit.
+% Plot the actual starting candidate when the search saves one.
+if isfield(source.configuration,'initial')
+    initial=source.configuration.initial;
+    original.edgeList=initial.edges;
+    original.Ne=size(initial.edges,1);
+    original.damageMask=zeros(original.Ne,1);
+    original.damageMask(initial.weakEdges)=1;
+    original.rupturePatchNodes=unique(initial.edges(initial.weakEdges,:));
+end
 figureHandle=figure('Color','w','Visible','off','Position',[100 100 1400 620]);
 layout=tiledlayout(1,2,'TileSpacing','compact');
 for idx=1:2
