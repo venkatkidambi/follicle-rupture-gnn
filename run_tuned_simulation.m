@@ -19,6 +19,7 @@ isResistanceFit=false;
 isMovingSurfaceFit=false;
 isMovingNetworkFit=false;
 isFixedSurfaceFit=false;
+isJointFit=false;
 if strcmpi(extension,'.csv')
     preset=readtable(fitFile);
     expected={'contractionRateFrac';'prestressStartTime';'maxwellRelaxationTime'; ...
@@ -40,6 +41,7 @@ else
     isMovingSurfaceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'moving-surface');
     isMovingNetworkFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'moving-surface-network');
     isFixedSurfaceFit=isfield(loaded.fit,'fitType') && strcmp(loaded.fit.fitType,'fixed-surface-network');
+    isJointFit=isfield(loaded.fit,'objectiveMode') && strcmp(loaded.fit.objectiveMode,'position-velocity');
     clear loaded;
 end
 param=set_surface_mode(param,surfaceMode);
@@ -60,6 +62,9 @@ if isMovingNetworkFit
 end
 if isFixedSurfaceFit
     simFile=fullfile(repo,'results','follicleShellSim_fixed_surface_network_tuned.mat');
+end
+if isJointFit
+    simFile=fullfile(repo,'results','follicleShellSim_fixed_position_velocity_tuned.mat');
 end
 if ~strcmp(surfaceMode,'saved')
     [folder,stem]=fileparts(simFile);

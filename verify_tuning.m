@@ -21,6 +21,13 @@ end
 verification.maxNetForceResidual_N=max(vecnorm(reshape(reference.nodeNetForce_time.',3,[]),2,1));
 verification.maxAbsoluteEdgeForce_nN=max(abs(reference.edgeForce_time),[],'all')*1e9;
 verification.wallSeconds=reference.wallSeconds;
+isJoint=isfield(fit,'objectiveMode') && strcmp(fit.objectiveMode,'position-velocity');
+if isJoint
+    referenceMetrics=tuning_score(reference,fit.data);
+    verification.trainingObjectiveDifference=abs(referenceMetrics.objective-fit.metrics.objective);
+    verification.trainingVelocityRMSEDifference_um_s=abs( ...
+        referenceMetrics.trainVelocityRMSE_um_s-fit.metrics.trainVelocityRMSE_um_s);
+end
 assert(verification.maxPositionDifference_um<0.1,'Fitted trajectory is not numerically converged.');
 assert(verification.ruptureTimeDifference_s<1,'Rupture time is not numerically converged.');
 assert(verification.maxNetForceResidual_N<1e-18,'Overdamped force balance failed.');
@@ -36,6 +43,10 @@ fprintf(fid,'Maximum node-position difference: %.9g um\n',verification.maxPositi
 fprintf(fid,'Rupture-time difference: %.9g s\n',verification.ruptureTimeDifference_s);
 fprintf(fid,'Maximum net-force residual: %.9g N\n',verification.maxNetForceResidual_N);
 fprintf(fid,'Maximum absolute edge force at observed frame times: %.9g nN\n',verification.maxAbsoluteEdgeForce_nN);
+if isJoint
+    fprintf(fid,'Joint training objective difference: %.9g\n',verification.trainingObjectiveDifference);
+    fprintf(fid,'Training interval-velocity RMSE difference: %.9g um/s\n',verification.trainingVelocityRMSEDifference_um_s);
+end
 fprintf(fid,'Passed; numerical consistency does not establish biological validity.\n');
 disp(verification);
 end

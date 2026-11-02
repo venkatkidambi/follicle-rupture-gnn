@@ -8,6 +8,7 @@ end
 loaded=load(fitFile,'fit'); fit=loaded.fit; data=fit.data;
 isMoving=isfield(fit.param,'movingSurface');
 isFixedRefit=isfield(fit,'fitType') && strcmp(fit.fitType,'fixed-surface-network');
+isJoint=isfield(data,'objective') && strcmp(data.objective.mode,'position-velocity');
 cellTable=table(fit.param.experimentalCellIds(:),data.trainNodes, ...
     sqrt(mean(fit.metrics.error_um.^2,2)),fit.metrics.error_um(:,end), ...
     fit.metrics.observedAxial(:,end)*1e6,fit.metrics.predictedAxial(:,end)*1e6, ...
@@ -17,6 +18,19 @@ writetable(cellTable,fullfile(fileparts(fitFile),'cell_errors.csv'));
 fig=plot_tuning_comparison(fitFile); close(fig);
 if isfield(fit,'structure'), fig=plot_network_fit(fitFile); close(fig); end
 if isMoving, fig=plot_moving_surface_fit(fitFile); close(fig); end
+if isJoint, fig=plot_velocity_fit(fitFile); close(fig); end
+if isJoint
+    metrics=[fit.sourceMetrics,fit.metrics];
+    comparison=table({'Position-only source';'Position + velocity fit'}, ...
+        [metrics.objective].',[metrics.trainRMSE_um].',[metrics.trainVelocityRMSE_um_s].', ...
+        [metrics.validationRMSE_um].',[metrics.validationVelocityRMSE_um_s].', ...
+        [metrics.validationJointObjective].', ...
+        [fit.sourceRuptureTime_s;fit.prediction.param.ruptureTime], ...
+        'VariableNames',{'Model','TrainingJointObjective','TrainingPositionRMSE_um', ...
+        'TrainingVelocityRMSE_um_s','HoldoutPositionRMSE_um','HoldoutVelocityRMSE_um_s', ...
+        'HoldoutJointObjective','RuptureTime_s'});
+    writetable(comparison,fullfile(fileparts(fitFile),'position_velocity_comparison.csv'));
+end
 reportFile=fullfile(fileparts(fitFile),'tuning_report.txt');
 fid=fopen(reportFile,'w');
 assert(fid>=0,'Cannot open tuning report.');
@@ -79,7 +93,17 @@ if isfield(fit,'structure')
             nnz(strcmp(proposals,'local edge swap')));
     end
 end
-fprintf(fid,'Training objective: mean squared 3D position error (um^2).\n');
+if isJoint
+    o=data.objective;
+    fprintf(fid,'Training objective: %s.\n',o.description);
+    fprintf(fid,'Fixed training-only scales: position %.9g um; velocity %.9g um/s; velocity weight %.6g.\n', ...
+        o.positionScale_um,o.velocityScale_um_s,o.velocityWeight);
+    fprintf(fid,'Use per-cell 3D interval velocities from matching position differences in model and observations.\n');
+    fprintf(fid,'Training/validation intervals use only endpoints within their own frame split; both endpoints must be valid.\n');
+    fprintf(fid,'No smoothing or differentiation across held-out frames. Velocity is derived, not independent evidence.\n');
+else
+    fprintf(fid,'Training objective: mean squared 3D position error (um^2).\n');
+end
 fprintf(fid,'%d training cells x %d training frames; %d held-out cells x %d held-out frames.\n', ...
     nnz(data.trainNodes),nnz(data.trainFrames),nnz(data.validationNodes),nnz(data.validationFrames));
 fprintf(fid,'Every fifth spatially ordered cell and alternating frames are excluded from the mechanical fitting objective.\n');
@@ -106,7 +130,11 @@ if isFixedRefit
     fprintf(fid,'Fixed before refit       %13.6f   %18.6f\n',fit.fixedSurfaceInitialMetrics.trainRMSE_um,fit.fixedSurfaceInitialMetrics.validationRMSE_um);
     fprintf(fid,'Source / fixed-before-refit rupture times: %.9g / %.9g s.\n', ...
         fit.sourceRuptureTime_s,fit.fixedSurfaceInitialRuptureTime_s);
-    fprintf(fid,'Only the fixed-before-refit comparison isolates the surface change at unchanged mechanics.\n');
+    if isJoint
+        fprintf(fid,'Source position-only fit is rescored under the same joint objective before refitting.\n');
+    else
+        fprintf(fid,'Only the fixed-before-refit comparison isolates the surface change at unchanged mechanics.\n');
+    end
 end
 fprintf(fid,'Original cell-scale      %13.6f   %18.6f\n',fit.baselineMetrics.trainRMSE_um,fit.baselineMetrics.validationRMSE_um);
 fprintf(fid,'No-motion benchmark      %13.6f   %18.6f\n',fit.stationaryMetrics.trainRMSE_um,fit.stationaryMetrics.validationRMSE_um);
@@ -117,7 +145,21 @@ if isfield(fit,'networkMetrics')
     fprintf(fid,'Frozen network benchmark %13.6f   %18.6f\n',fit.networkMetrics.trainRMSE_um,fit.networkMetrics.validationRMSE_um);
 end
 fprintf(fid,'Fitted mechanics         %13.6f   %18.6f\n',fit.metrics.trainRMSE_um,fit.metrics.validationRMSE_um);
-fprintf(fid,'Training mean squared error: %.8f um^2\n',fit.metrics.objective);
+fprintf(fid,'Training position mean squared error: %.8f um^2\n',fit.metrics.trainRMSE_um^2);
+if isJoint
+    fprintf(fid,'\nPOSITION + VELOCITY COMPARISON (source / fitted)\n');
+    fprintf(fid,'Training normalized joint objective: %.9g / %.9g\n',fit.sourceMetrics.objective,fit.metrics.objective);
+    fprintf(fid,'Training position / velocity terms, fitted: %.9g / %.9g\n', ...
+        fit.metrics.trainPositionTerm,fit.metrics.trainVelocityTerm);
+    fprintf(fid,'Training velocity RMSE (um/s): %.9g / %.9g\n', ...
+        fit.sourceMetrics.trainVelocityRMSE_um_s,fit.metrics.trainVelocityRMSE_um_s);
+    fprintf(fid,'Held-out velocity RMSE (um/s): %.9g / %.9g\n', ...
+        fit.sourceMetrics.validationVelocityRMSE_um_s,fit.metrics.validationVelocityRMSE_um_s);
+    fprintf(fid,'Held-out normalized joint objective: %.9g / %.9g\n', ...
+        fit.sourceMetrics.validationJointObjective,fit.metrics.validationJointObjective);
+    fprintf(fid,'Training / held-out valid cell-interval counts: %d / %d\n\n', ...
+        fit.metrics.trainVelocitySamples,fit.metrics.validationVelocitySamples);
+end
 fprintf(fid,'Held-out median error: %.6f um\n',fit.metrics.validationMedian_um);
 late=data.validationNodes & data.validationFrames.' & (data.time.'>=1200) & data.valid;
 fprintf(fid,'Last 10 min held-out RMSE: fitted %.6f um; no motion %.6f um\n', ...

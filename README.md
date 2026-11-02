@@ -304,6 +304,45 @@ suffix. A requested optimization starts only when its tuning command is run.
 
 ## Parameter fitting against tracked cells
 
+### Full fixed-surface position and velocity fit
+
+```matlab
+sourceFit = fullfile('results','archive','02_fixed_surface_resistance','best_fit.mat');
+fit = tune_fixed_position_velocity_simulation(240, false, sourceFit);
+fitFile = fullfile('results','fixed_position_velocity_tuning','best_fit.mat');
+outputs = regenerate_tuned_results(fitFile);
+```
+
+This reopens all ten global controls, graph density and axial neighbor weights,
+individual local edge swaps, and rupture-patch location and size. The approved
+archived resistance fit is a supported source: its seven fixed network controls
+and three resistance controls are recovered with their original coefficient
+reference and bounds. The starting prediction must reproduce that source.
+No measured expansion is applied. Results/checkpoints are separate from all
+position-only fits; resume with `true` and a larger total evaluation budget.
+
+The dimensionless training loss is position MSE divided by training observed
+displacement RMS squared, plus interval-velocity MSE divided by training
+observed velocity RMS squared, with velocity weight 1. Scales are fixed before
+search and use training observations only. Both terms use all three components
+of individual cells' motion; a stationary prediction has one unit of error in
+each term. This weighting specifies relative fitting priorities, not independent
+measurement likelihoods or calibrated noise variances.
+
+Experimental and simulated velocities are matching position differences over
+successive frames within each split. With alternating frames they span about
+81.8 seconds. Both endpoints must be valid; training differences never include
+held-out frames or cells. No smoothing crosses the split. Velocity derived from
+positions is not new independent data, and sub-frame recoil peaks are not
+resolved. Held-out velocity and joint scores are reported but never select
+candidates. `velocity_comparison.png` displays matched axial interval velocities
+for the three initial bands, separately for training and held-out cells.
+
+Final candidate selection uses fine-solver joint training loss, keeping the
+unchanged source eligible. Search coverage records every parameter and proposal
+family. This is the full existing bounded search, not an exhaustive global
+optimum. Simulation/figure/video filenames use `_fixed_position_velocity_tuned`.
+
 To reopen **every previously fitted control** while retaining the measured
 moving surface, run:
 

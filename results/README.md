@@ -1,5 +1,44 @@
 # Saved tuning results
 
+## Fixed-surface position and velocity run
+
+The full joint-objective run is in
+[fixed_position_velocity_tuning/](fixed_position_velocity_tuning/). It starts
+from the approved [fixed-surface resistance fit](archive/02_fixed_surface_resistance/)
+and retains its static geometry. Position and interval-velocity losses have
+equal weights after normalization by training-only observed-motion RMS scales.
+
+- [Position/velocity comparison table](fixed_position_velocity_tuning/position_velocity_comparison.csv)
+- [Velocity comparison, training and held-out cells](fixed_position_velocity_tuning/velocity_comparison.png)
+- [Trajectory comparison](fixed_position_velocity_tuning/trajectory_comparison.png)
+- [Network and rupture-patch comparison](fixed_position_velocity_tuning/network_comparison.png)
+- [Report and numerical verification](fixed_position_velocity_tuning/tuning_report.txt)
+- [Simulation video](follicle_rupture_motion_fixed_position_velocity_tuned.mp4)
+- [Saved fit](fixed_position_velocity_tuning/best_fit.mat)
+- [Forward simulation](follicleShellSim_fixed_position_velocity_tuned.mat)
+- [Search log](fixed_position_velocity_tuning/optimization.log)
+- [Code snapshot](fixed_position_velocity_tuning/source_snapshot.zip) and
+  [run provenance](fixed_position_velocity_tuning/run_provenance.json)
+
+All 240 coarse trials completed, followed by six fine-solver candidates
+including the source. Coverage: 36 graph proposals, 59 patch-center proposals,
+13 patch-size proposals, 48 scalar proposals covering all ten controls, and
+83 local edge swaps. Both the selected graph and weak-link pairs changed.
+The joint training objective fell from 1.337129 to 1.273694 (4.74%).
+Position RMSE changed from 14.067942 to 13.752792 µm on training samples and
+16.747194 to 16.471698 µm on held-out samples. Velocity RMSE changed from
+0.0736073 to 0.0717694 µm/s on training intervals and 0.0836529 to 0.0821210
+µm/s on held-out intervals. The predicted rupture time is 839.900947 s.
+
+This remains a bounded within-specimen fit. Interval velocities use only
+endpoints within each split (about 81.8 s apart), and are derived from the
+same positions rather than independent measurements. Late body-band motion
+remains substantially underestimated. Tighter integration changed node
+positions by at most 0.0000512 µm and rupture time by 0.00000804 s. The
+221-frame video was decoded and verified through the final simulation time.
+
+## Moving-surface results
+
 Start with [current/](current/) for the latest full moving-surface refit.
 Each run keeps its fit, parameters, search history, reports, simulation,
 plots, and video together. Earlier stages are preserved in [archive/](archive/),

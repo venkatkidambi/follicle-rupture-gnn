@@ -84,7 +84,11 @@ elseif isfield(fit.param,'fixedSurface')
     summary=strrep(summary,'No prescribed node displacements', ...
         'First-frame ellipsoid held fixed; expansion disabled');
 end
-text(0,1,summary,'Units','normalized','VerticalAlignment','top','FontSize',11,'Interpreter','none');
+if isfield(fit,'objectiveMode') && strcmp(fit.objectiveMode,'position-velocity')
+    summary=[summary sprintf('\n\nJoint objective: %.4g\nVelocity RMSE train / holdout: %.4g / %.4g um/s', ...
+        fit.metrics.objective,fit.metrics.trainVelocityRMSE_um_s,fit.metrics.validationVelocityRMSE_um_s)];
+end
+text(0,1,summary,'Units','normalized','VerticalAlignment','top','FontSize',10,'Interpreter','none');
 title(layout,'Experimental trajectories and force-driven parameter fit');
 exportgraphics(figureHandle,fullfile(fileparts(fitFile),'trajectory_comparison.png'),'Resolution',180);
 end

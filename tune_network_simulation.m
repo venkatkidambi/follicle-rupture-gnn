@@ -1,6 +1,6 @@
-function fit = tune_network_simulation(maxEvaluations, resumeSearch, surfaceMode, sourceFitFile)
+function fit = tune_network_simulation(maxEvaluations, resumeSearch, surfaceMode, sourceFitFile, objectiveMode)
 %TUNE_NETWORK_SIMULATION Fit static connections, weak patch, and global mechanics.
-% Motion is predicted by force balance. Only training position error selects
+% Motion is predicted by force balance. Only the training objective selects
 % candidates; validation data never propose edges, patches, or coefficients.
 % The original parameter-only fit is retained in results/parameter_tuning.
 % An optional ten-control source fit enables a fixed-surface refit using the
@@ -9,16 +9,23 @@ if nargin<1, maxEvaluations=160; end
 if nargin<2, resumeSearch=false; end
 if nargin<3, surfaceMode='fixed'; end
 if nargin<4, sourceFitFile=''; end
+if nargin<5, objectiveMode='position'; end
+objectiveMode=validatestring(objectiveMode,{'position','position-velocity'});
+jointObjective=strcmp(objectiveMode,'position-velocity');
 surfaceMode=validatestring(surfaceMode,{'fixed','moving'});
 assert(ismember(surfaceMode,{'fixed','moving'}),'Use fixed or moving surface mode.');
 movingSearch=strcmp(surfaceMode,'moving');
 seededSearch=movingSearch || ~isempty(sourceFitFile);
+assert(~jointObjective || (seededSearch && ~movingSearch), ...
+    'Joint position/velocity fitting requires a fixed-surface source fit.');
 validateattributes(maxEvaluations,{'numeric'},{'scalar','integer','>=',8});
 if seededSearch
     validateattributes(maxEvaluations,{'numeric'},{'scalar','integer','>=',80});
 end
 repo=fileparts(mfilename('fullpath')); addpath(fullfile(repo,'src'));
-if movingSearch
+if jointObjective
+    outputName='fixed_position_velocity_tuning';
+elseif movingSearch
     outputName='moving_network_tuning';
 elseif seededSearch
     outputName='fixed_surface_network_tuning';
@@ -32,10 +39,7 @@ if seededSearch
     if isempty(sourceFile)
         sourceFile=fullfile(repo,'results','moving_surface_tuning','best_fit.mat');
     end
-    loaded=load(sourceFile,'fit'); previous=loaded.fit;
-    assert(isfield(previous,'frozenBase') && numel(previous.values)==10, ...
-        'follicle_rupture:invalidSurfaceSeed', ...
-        'The source must be a ten-control surface fit with its original coefficient reference.');
+    previous=load_network_seed(sourceFile);
     % Retain the original multiplier reference so the incumbent is reproduced
     % exactly and changing the graph does not compound parameter multipliers.
     base=previous.frozenBase; data=previous.data;
@@ -74,6 +78,12 @@ if numel(initialValues)==6, initialValues(7)=base.contractionRampTime; end
 initialEdges=base.edgeList; initialWeakEdges=find(base.damageMask>0);
 scalarOrder=[1 2 7 4 5 6 3]; trialSeconds=60;
 end
+data=configure_tuning_objective(data,objectiveMode);
+if jointObjective
+    previous.metrics=tuning_score(previous.prediction,data);
+    stationary.Y=zeros(size(previous.prediction.Y));
+    stationaryMetrics=tuning_score(stationary,data);
+end
 logarithmic=true(size(lower)); logarithmic(2)=false;
 low=lower; high=upper; low(logarithmic)=log(low(logarithmic)); high(logarithmic)=log(high(logarithmic));
 geometry=tuning_network_geometry(base);
@@ -87,6 +97,10 @@ if seededSearch && (~movingSearch || ~isempty(sourceFitFile))
     configuration.version=3;
     configuration.surfaceMode=surfaceMode;
     configuration.sourceFitFile=sourceFile;
+end
+if jointObjective
+    configuration.version=4;
+    configuration.objective=data.objective.description;
 end
 history=struct('candidate',{},'objective',{},'trainRMSE_um',{},'wallSeconds',{},'status',{});
 checkpoint=fullfile(out,'search_history.mat');
@@ -125,7 +139,14 @@ if seededSearch && ~movingSearch
     baseline=struct('sourceFitFile',sourceFile,'sourceMetrics',previous.metrics, ...
         'sourceRuptureTime_s',previous.prediction.param.ruptureTime, ...
         'fixedPrediction',incumbent,'fixedMetrics',incumbentMetrics);
-    save(fullfile(out,'surface_comparison_before_refit.mat'),'baseline','-v7.3');
+    if jointObjective
+        baselineName='objective_comparison_before_refit.mat';
+        assert(max(abs(incumbent.Y-previous.prediction.Y),[],'all')<1e-10, ...
+            'Rebuilding the fixed-surface seed changed its prediction.');
+    else
+        baselineName='surface_comparison_before_refit.mat';
+    end
+    save(fullfile(out,baselineName),'baseline','-v7.3');
 end
 stream=RandStream('mt19937ar','Seed',72419);
 % Alternate topology, patch, scalar, and local edge searches. Budgets reserve
@@ -142,6 +163,7 @@ while numel(history)<maxEvaluations
         for weight=[.5 1 2]
             if numel(history)>=stopGraph, break; end
             trial=best;
+            if trial.centerNode==0, trial.centerNode=nearestPatchCenter(trial); end
             trial.edges=tuning_local_network(base,geometry,count,weight);
             trial=refreshPatch(trial);
             trial.proposal=sprintf('local graph k=%d axial weight=%g',count,weight);
@@ -239,6 +261,7 @@ fit.lowerBounds=lower; fit.upperBounds=upper;
 fit.param=tuning_rebuild_network(base,selected.edges,selected.weakEdges,selected.values);
 fit.metrics=bestMetrics; fit.baselineMetrics=baselineMetrics; fit.stationaryMetrics=stationaryMetrics;
 fit.data=data; fit.prediction=bestResult;
+fit.objectiveMode=objectiveMode;
 if seededSearch
     fit.sourceFitFile=sourceFile;
     if isfield(previous,'multiplierReferenceFile')
@@ -287,6 +310,14 @@ if seededSearch
         any(strcmp(fit.searchCoverage.proposals,['mechanics ' name])),names);
     assert(all(fit.searchCoverage.evaluatedControls), ...
         'Search budget did not cover every global control.');
+    if jointObjective
+        families={'local graph','patch center','patch size','mechanics','local edge swap'};
+        fit.searchCoverage.families=families;
+        fit.searchCoverage.familyCounts=cellfun(@(prefix) ...
+            nnz(startsWith(fit.searchCoverage.proposals,prefix)),families);
+        assert(all(fit.searchCoverage.familyCounts>0), ...
+            'Full search did not evaluate every proposal family.');
+    end
     fit.searchCoverage.connectionsChanged=~isequal(selected.edges,initial.edges);
     fit.searchCoverage.weakPairsChanged=~isequal(selected.edges(selected.weakEdges,:), ...
         initial.edges(initial.weakEdges,:));
@@ -301,6 +332,11 @@ writetable(table(ids(selected.edges(:,1)),ids(selected.edges(:,2)),fit.param.L0_
     fullfile(out,'connections.csv'));
 fprintf('NETWORK FIT COMPLETE: training %.4f -> %.4f um; joint holdout %.4f -> %.4f um.\n', ...
     incumbentMetrics.trainRMSE_um,bestMetrics.trainRMSE_um,incumbentMetrics.validationRMSE_um,bestMetrics.validationRMSE_um);
+if jointObjective
+    fprintf('JOINT OBJECTIVE %.8g -> %.8g; training velocity RMSE %.6g -> %.6g um/s.\n', ...
+        incumbentMetrics.objective,bestMetrics.objective, ...
+        incumbentMetrics.trainVelocityRMSE_um_s,bestMetrics.trainVelocityRMSE_um_s);
+end
 
     function evaluate(trial)
         if numel(history)>=maxEvaluations, return; end
@@ -323,16 +359,17 @@ fprintf('NETWORK FIT COMPLETE: training %.4f -> %.4f um; joint holdout %.4f -> %
             'wallSeconds',toc(timer),'status',status);
         if strcmp(status,'ok'), cache(key)=numel(history); end
         if objective<bestObjective, best=trial; bestObjective=objective; end
-        fprintf('Network trial %d/%d: RMSE %.4f um, %.1f s, best %.4f | %s | %s\n', ...
-            numel(history),maxEvaluations,rmse,history(end).wallSeconds,sqrt(bestObjective),trial.proposal,status);
+        fprintf('Network trial %d/%d: position RMSE %.4f um, %.1f s, objective %.6g, best %.6g | %s | %s\n', ...
+            numel(history),maxEvaluations,rmse,history(end).wallSeconds,objective,bestObjective,trial.proposal,status);
         save(checkpoint,'configuration','history');
     end
     function trial=refreshPatch(trial)
         if trial.centerNode==0, trial.centerNode=nearestPatchCenter(trial); end
         trial.weakEdges=tuning_rupture_patch(base,trial.edges,trial.centerNode,trial.patchSize);
     end
-    function node=nearestPatchCenter(~)
-        center=mean(base.nodeCoords(base.rupturePatchNodes,:),1);
+    function node=nearestPatchCenter(candidate)
+        nodes=unique(candidate.edges(candidate.weakEdges,:));
+        center=mean(base.nodeCoords(nodes,:),1);
         distance=sum((base.nodeCoords-center).^2,2); distance(base.anchorNodeMask>0)=inf;
         [~,node]=min(distance);
     end
