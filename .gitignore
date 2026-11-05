@@ -3,6 +3,10 @@
 *.asv
 *.fig
 .DS_Store
+.venv/
+__pycache__/
+*.pyc
+.mplconfig/
 **/.DS_Store
 
 # Local Codex agent instructions.

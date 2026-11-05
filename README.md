@@ -1,5 +1,14 @@
 # Follicle Rupture Shell Simulation
 
+The rebuilt [Python physics-informed GNN](inverse_mechanics/README.md) learns
+bounded regional coefficients through explicit differentiable 3D mechanics.
+It supports elastic, Maxwell, Kelvin–Voigt, Zener and Burgers elements, local
+damage and rupture-gated adhesion release. Synthetic validation precedes
+experimental fitting; forecasts use a strict temporal holdout. Candidate
+connectivity and damage susceptibility remain fixed in this first stage.
+See its [validation and experimental results](inverse_mechanics/RESULTS.md)
+for evidence and limitations; fitted motion alone does not establish discovery.
+
 This repository contains the core MATLAB simulation of follicle rupture on an
 ellipsoidal epithelial shell. It is intentionally minimal so the mechanics can
 be rebuilt from first principles.
